@@ -1,6 +1,6 @@
 {
   "name": "isonantic-ts",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "ISONantic - Zod-like validation and type-safe models for ISON format",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -42,10 +42,10 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "ison-ts": "^1.0.2",
+    "ison-ts": "file:../ison-ts",
     "tsup": "^8.0.0",
     "typescript": "^5.0.0",
-    "vitest": "^1.0.0"
+    "vitest": "^3.2.7"
   },
   "engines": {
     "node": ">=16.0.0"

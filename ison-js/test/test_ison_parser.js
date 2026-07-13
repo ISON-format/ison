@@ -776,6 +776,121 @@ test('test_isonl_envelope_validation', () => {
     assertEqual(parsed.blocks[0].name, 'v1.2');
 });
 
+test('test_extra_values_rejected', () => {
+    // Regression: rows with more values than fields must error, not truncate
+    let threw = false;
+    try {
+        ISON.loads('table.t\na b\n1 2 3');
+    } catch (e) {
+        threw = true;
+        assert(e instanceof ISON.ISONSyntaxError, `expected ISONSyntaxError, got ${e.name}`);
+        assert(e.message.includes('3 values'), `unexpected message: ${e.message}`);
+    }
+    assert(threw, 'should have rejected extra value');
+
+    // A quoted token is data, never a comment
+    threw = false;
+    try {
+        ISON.loads('table.t\na b\n1 2 "#not-a-comment"');
+    } catch (e) {
+        threw = true;
+        assert(e instanceof ISON.ISONSyntaxError, `expected ISONSyntaxError, got ${e.name}`);
+    }
+    assert(threw, 'should have rejected quoted extra value');
+
+    // ISONL
+    threw = false;
+    try {
+        ISON.loadsISONL('table.t|a b|1 2 3');
+    } catch (e) {
+        threw = true;
+        assert(e instanceof ISON.ISONSyntaxError, `expected ISONSyntaxError, got ${e.name}`);
+        assert(e.message.includes('3 values'), `unexpected message: ${e.message}`);
+    }
+    assert(threw, 'should have rejected extra ISONL value');
+});
+
+test('test_inline_trailing_comment', () => {
+    // An unquoted token starting with '#' begins an inline comment
+    let doc = ISON.loads('table.t\na b\n1 2 # note ignored');
+    assertEqual(
+        JSON.stringify(doc.blocks[0].rows[0]),
+        JSON.stringify({ a: 1, b: 2 })
+    );
+
+    doc = ISON.loadsISONL('table.t|a b|1 2 # note ignored');
+    assertEqual(
+        JSON.stringify(doc.blocks[0].rows[0]),
+        JSON.stringify({ a: 1, b: 2 })
+    );
+
+    // Comment mid-row: remaining fields are missing, not data
+    doc = ISON.loads('table.t\na b\n1 #tag');
+    assertEqual(
+        JSON.stringify(doc.blocks[0].rows[0]),
+        JSON.stringify({ a: 1, b: null })
+    );
+
+    // Quoted tokens are always data, never comments
+    doc = ISON.loads('table.t\na b\n1 "#tag"');
+    assertEqual(
+        JSON.stringify(doc.blocks[0].rows[0]),
+        JSON.stringify({ a: 1, b: '#tag' })
+    );
+
+    // Serializer quotes leading-'#' strings so they round-trip as data
+    doc = new ISON.Document();
+    doc.blocks.push(new ISON.Block('table', 't', ['a'], [{ a: '#tag' }]));
+    const parsed = ISON.loads(ISON.dumps(doc));
+    assertEqual(parsed.blocks[0].rows[0].a, '#tag');
+});
+
+test('test_ison_roundtrip_property', () => {
+    // Property test: regular ISON round-trip over a hostile alphabet.
+    // Same deterministic BigInt LCG as test_isonl_roundtrip_property.
+    let state = 20260713n;
+    const nextState = () => {
+        state = (state * 1103515245n + 12345n) % 2147483648n;
+        return Number(state);
+    };
+    const randInt = (lo, hi) => lo + (nextState() % (hi - lo + 1));
+
+    const alphabet = ['a', 'b', ' ', '|', '"', '\\', '\n', '\r', '\t', '.', ':', '#', '0', '1', 'true', 'null'];
+
+    for (let trial = 0; trial < 300; trial++) {
+        const fields = [];
+        const numFields = randInt(1, 4);
+        for (let i = 0; i < numFields; i++) {
+            fields.push(`f${i}`);
+        }
+
+        const rows = [];
+        const numRows = randInt(1, 3);
+        for (let r = 0; r < numRows; r++) {
+            const row = {};
+            for (const field of fields) {
+                const parts = [];
+                const numParts = randInt(0, 12);
+                for (let p = 0; p < numParts; p++) {
+                    parts.push(alphabet[randInt(0, alphabet.length - 1)]);
+                }
+                row[field] = parts.join('');
+            }
+            rows.push(row);
+        }
+
+        const doc = new ISON.Document();
+        doc.blocks.push(new ISON.Block('table', 't', fields, rows));
+        const out = ISON.dumps(doc);
+        const parsed = ISON.loads(out);
+        assertEqual(
+            JSON.stringify(parsed.blocks[0].rows),
+            JSON.stringify(rows),
+            `trial ${trial}: ${JSON.stringify(out)}`
+        );
+    }
+});
+
 // =============================================================================
 // Run Tests
 // =============================================================================

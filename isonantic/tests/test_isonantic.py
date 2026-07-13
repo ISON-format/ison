@@ -698,6 +698,18 @@ class TestCoreParserDelegation:
         assert len(teams) == 1
         assert teams[0].name == "A"
 
+    def test_llm_mid_block_chatter_recovered(self):
+        """Prose interleaved between data rows is dropped, not parsed as data"""
+        llm_response = """
+        table.teams
+        id name budget
+        1 "A" 10.0
+        This is chatter in the middle of the data
+        2 "B" 20.0
+        """
+        teams = parse_llm_output(llm_response, Team)
+        assert [t.name for t in teams] == ["A", "B"]
+
 
 # =============================================================================
 # Run Tests

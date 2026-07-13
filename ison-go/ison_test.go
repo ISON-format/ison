@@ -926,3 +926,161 @@ func TestISONLEnvelopeValidation(t *testing.T) {
 	assert.Equal(t, "table", block.Kind)
 	assert.Equal(t, "v1.2", block.Name)
 }
+
+func TestExtraValuesRejected(t *testing.T) {
+	// Regression: rows with more values than fields must error, not truncate
+	_, err := Parse("table.t\na b\n1 2 3")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "3 values")
+
+	// A quoted token is data, never a comment, so it still counts as extra
+	_, err = Parse("table.t\na b\n1 2 \"#not-a-comment\"")
+	require.Error(t, err)
+
+	// ISONL
+	_, err = ParseISONL("table.t|a b|1 2 3")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "3 values")
+}
+
+func TestInlineTrailingComment(t *testing.T) {
+	// An unquoted token starting with '#' begins an inline comment
+	doc, err := Parse("table.t\na b\n1 2 # note ignored")
+	require.NoError(t, err)
+	block, ok := doc.Get("t")
+	require.True(t, ok)
+	require.Len(t, block.Rows, 1)
+	a, _ := block.Rows[0]["a"].AsInt()
+	assert.Equal(t, int64(1), a)
+	b, _ := block.Rows[0]["b"].AsInt()
+	assert.Equal(t, int64(2), b)
+
+	// Same rule for the ISONL values section
+	doc, err = ParseISONL("table.t|a b|1 2 # note ignored")
+	require.NoError(t, err)
+	block, ok = doc.Get("t")
+	require.True(t, ok)
+	require.Len(t, block.Rows, 1)
+	a, _ = block.Rows[0]["a"].AsInt()
+	assert.Equal(t, int64(1), a)
+	b, _ = block.Rows[0]["b"].AsInt()
+	assert.Equal(t, int64(2), b)
+
+	// Comment mid-row: remaining fields are missing, not data
+	doc, err = Parse("table.t\na b\n1 #tag")
+	require.NoError(t, err)
+	block, ok = doc.Get("t")
+	require.True(t, ok)
+	require.Len(t, block.Rows, 1)
+	a, _ = block.Rows[0]["a"].AsInt()
+	assert.Equal(t, int64(1), a)
+	assert.True(t, block.Rows[0]["b"].IsNull())
+
+	// Quoted tokens are always data, never comments
+	doc, err = Parse("table.t\na b\n1 \"#tag\"")
+	require.NoError(t, err)
+	block, ok = doc.Get("t")
+	require.True(t, ok)
+	tag, isStr := block.Rows[0]["b"].AsString()
+	assert.True(t, isStr)
+	assert.Equal(t, "#tag", tag)
+
+	// Serializer quotes leading-'#' strings so they round-trip as data
+	doc = NewDocument()
+	out := NewBlock("table", "t")
+	out.AddField("a", "")
+	out.AddRow(Row{"a": String("#tag")})
+	doc.AddBlock(out)
+
+	parsed, err := Parse(Dumps(doc))
+	require.NoError(t, err)
+	parsedBlock, ok := parsed.Get("t")
+	require.True(t, ok)
+	require.Len(t, parsedBlock.Rows, 1)
+	got, isStr := parsedBlock.Rows[0]["a"].AsString()
+	assert.True(t, isStr)
+	assert.Equal(t, "#tag", got)
+}
+
+func TestISONRoundtripProperty(t *testing.T) {
+	// Preamble: string values shaped like a block header ("kind.name") must be
+	// quoted on output, or Parse misreads them as the start of a new block.
+	headerLike := []string{"a.true", "object.config"}
+	doc := NewDocument()
+	block := NewBlock("table", "t")
+	block.AddField("v", "")
+	for _, s := range headerLike {
+		block.AddRow(Row{"v": String(s)})
+	}
+	doc.AddBlock(block)
+
+	parsed, err := Parse(Dumps(doc))
+	require.NoError(t, err)
+	require.Len(t, parsed.Blocks, 1, "header-like values must stay within one block: %q", Dumps(doc))
+	parsedBlock, ok := parsed.Get("t")
+	require.True(t, ok)
+	require.Len(t, parsedBlock.Rows, len(headerLike))
+	for i, want := range headerLike {
+		got, isStr := parsedBlock.Rows[i]["v"].AsString()
+		assert.True(t, isStr, "row %d: expected string, got %#v", i, parsedBlock.Rows[i]["v"])
+		assert.Equal(t, want, got, "row %d: header-like value corrupted", i)
+	}
+
+	// Regular-format twin of TestISONLRoundtripProperty: random strings over
+	// a hostile alphabet must survive Dumps -> Parse unchanged.
+	// Deterministic LCG so failures are reproducible.
+	state := int64(20260713)
+	next := func() int64 {
+		state = (state*1103515245 + 12345) % 2147483648
+		return state
+	}
+	randInt := func(lo, hi int) int {
+		return lo + int(next()%int64(hi-lo+1))
+	}
+
+	alphabet := []string{"a", "b", " ", "|", "\"", "\\", "\n", "\r", "\t", ".", ":", "#", "0", "1", "true", "null"}
+
+	for trial := 0; trial < 300; trial++ {
+		numFields := randInt(1, 4)
+		fields := make([]string, numFields)
+		for i := range fields {
+			fields[i] = fmt.Sprintf("f%d", i)
+		}
+
+		numRows := randInt(1, 3)
+		rows := make([]Row, numRows)
+		for r := range rows {
+			row := make(Row)
+			for _, f := range fields {
+				var sb strings.Builder
+				for n := randInt(0, 12); n > 0; n-- {
+					sb.WriteString(alphabet[randInt(0, len(alphabet)-1)])
+				}
+				row[f] = String(sb.String())
+			}
+			rows[r] = row
+		}
+
+		doc := NewDocument()
+		block := NewBlock("table", "t")
+		for _, f := range fields {
+			block.AddField(f, "")
+		}
+		for _, row := range rows {
+			block.AddRow(row)
+		}
+		doc.AddBlock(block)
+
+		output := Dumps(doc)
+
+		parsed, err := Parse(output)
+		require.NoError(t, err, "trial %d: parse failed for %q", trial, output)
+
+		parsedBlock, ok := parsed.Get("t")
+		require.True(t, ok, "trial %d: block missing for %q", trial, output)
+		require.Len(t, parsedBlock.Rows, len(rows), "trial %d: row count mismatch for %q", trial, output)
+		for i, want := range rows {
+			assert.Equal(t, want, parsedBlock.Rows[i], "trial %d row %d: %#v -> %q -> %#v", trial, i, want, output, parsedBlock.Rows[i])
+		}
+	}
+}

@@ -44,14 +44,11 @@
   },
   "devDependencies": {
     "@types/node": "^18.0.0",
-    "gulp": "^4.0.2",
-    "n8n-workflow": "^1.0.0",
-    "typescript": "^5.0.0",
+    "eslint": "^8.0.0",
+    "gulp": "^5.0.1",
+    "n8n-workflow": "^2.16.0",
     "prettier": "^3.0.0",
-    "eslint": "^8.0.0"
-  },
-  "dependencies": {
-    "ison-parser": "^1.0.2"
+    "typescript": "^5.0.0"
   },
   "peerDependencies": {
     "n8n-workflow": "*"

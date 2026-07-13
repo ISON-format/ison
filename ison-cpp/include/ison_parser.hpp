@@ -579,6 +579,50 @@ public:
         return doc;
     }
 
+    /**
+     * Return the number of leading tokens that are data: an unquoted token
+     * starting with '#' begins an inline comment, ignoring it and everything
+     * after it. Quoted tokens are always data. (Shared with ISONLParser.)
+     */
+    static size_t strip_inline_comment(const std::vector<std::string>& raw_tokens,
+                                       const std::vector<bool>& quoted_flags) {
+        for (size_t i = 0; i < raw_tokens.size(); ++i) {
+            if (!quoted_flags[i] && !raw_tokens[i].empty() && raw_tokens[i][0] == '#') {
+                return i;
+            }
+        }
+        return raw_tokens.size();
+    }
+
+    /**
+     * Reject rows with more values than fields instead of silently
+     * truncating them. (Shared with ISONLParser.)
+     */
+    static void check_extra_tokens(const std::vector<std::string>& raw_tokens,
+                                   size_t field_count, int line_num) {
+        if (raw_tokens.size() <= field_count) return;
+        throw ISONSyntaxError(
+            "Row has " + std::to_string(raw_tokens.size()) + " values but only " +
+            std::to_string(field_count) + " fields (extra value: '" +
+            raw_tokens[field_count] + "')",
+            line_num, 0);
+    }
+
+    /**
+     * Check whether a bare line scans as a 'kind.name' block header.
+     * (Also used by Serializer to quote strings that would be misread
+     * as a header when they land alone on a row line.)
+     */
+    static bool looks_like_header(const std::string& line) {
+        size_t dot_pos = line.find('.');
+        if (dot_pos == std::string::npos) return false;
+        if (line.find(' ') != std::string::npos) return false;
+
+        std::string kind = line.substr(0, dot_pos);
+        std::string name = line.substr(dot_pos + 1);
+        return is_valid_id(kind) && is_valid_id(name);
+    }
+
 private:
     std::vector<std::string> lines_;
     size_t line_num_;
@@ -666,16 +710,6 @@ private:
         return block;
     }
 
-    bool looks_like_header(const std::string& line) const {
-        size_t dot_pos = line.find('.');
-        if (dot_pos == std::string::npos) return false;
-        if (line.find(' ') != std::string::npos) return false;
-
-        std::string kind = line.substr(0, dot_pos);
-        std::string name = line.substr(dot_pos + 1);
-        return is_valid_id(kind) && is_valid_id(name);
-    }
-
     static bool is_valid_id(const std::string& s) {
         if (s.empty()) return false;
         if (!std::isalpha(static_cast<unsigned char>(s[0])) && s[0] != '_') return false;
@@ -691,6 +725,7 @@ private:
         std::vector<std::string> raw_tokens = tokenizer.tokenize();
 
         std::vector<Value> values;
+        std::vector<bool> quoted_flags;
         size_t pos = 0;
 
         for (size_t i = 0; i < raw_tokens.size(); ++i) {
@@ -699,6 +734,7 @@ private:
             }
             bool was_quoted = pos < line.size() && line[pos] == '"';
             values.push_back(TypeInferrer::infer(raw_tokens[i], was_quoted));
+            quoted_flags.push_back(was_quoted);
 
             if (was_quoted) {
                 ++pos;
@@ -711,6 +747,11 @@ private:
                 pos += raw_tokens[i].size();
             }
         }
+
+        size_t keep = strip_inline_comment(raw_tokens, quoted_flags);
+        raw_tokens.resize(keep);
+        values.resize(keep);
+        check_extra_tokens(raw_tokens, fields.size(), static_cast<int>(line_num_ + 1));
 
         Row row;
         for (size_t i = 0; i < fields.size(); ++i) {
@@ -849,12 +890,17 @@ private:
     static std::string quote_if_needed(const std::string& s) {
         if (s.empty()) return "\"\"";
 
-        bool needs_quote = (s == "true" || s == "false" || s == "null" || s[0] == ':');
+        // '\r' and '\\' would be emitted raw and corrupt on re-parse; a
+        // leading '#' would turn the line into a comment (or an inline
+        // comment) and silently lose data.
+        bool needs_quote = (s == "true" || s == "false" || s == "null" ||
+                            s[0] == ':' || s[0] == '#');
 
         if (!needs_quote) {
             for (size_t i = 0; i < s.size(); ++i) {
                 char c = s[i];
-                if (c == ' ' || c == '\t' || c == '"' || c == '\n' || c == '\r') {
+                if (c == ' ' || c == '\t' || c == '"' || c == '\n' ||
+                    c == '\r' || c == '\\') {
                     needs_quote = true;
                     break;
                 }
@@ -862,6 +908,12 @@ private:
         }
 
         if (!needs_quote && looks_like_number(s)) {
+            needs_quote = true;
+        }
+
+        // A bare 'kind.name'-shaped value alone on a row line would be
+        // misread as the next block header on re-parse
+        if (!needs_quote && Parser::looks_like_header(s)) {
             needs_quote = true;
         }
 
@@ -993,13 +1045,16 @@ public:
         Tokenizer value_tokenizer(sections[2], line_num);
         std::vector<std::string> raw_values = value_tokenizer.tokenize();
 
+        std::vector<Value> typed_values;
+        std::vector<bool> quoted_flags;
         size_t pos = 0;
-        for (size_t i = 0; i < record.fields.size() && i < raw_values.size(); ++i) {
+        for (size_t i = 0; i < raw_values.size(); ++i) {
             while (pos < sections[2].size() && (sections[2][pos] == ' ' || sections[2][pos] == '\t')) {
                 ++pos;
             }
             bool was_quoted = pos < sections[2].size() && sections[2][pos] == '"';
-            record.values[record.fields[i]] = TypeInferrer::infer(raw_values[i], was_quoted);
+            typed_values.push_back(TypeInferrer::infer(raw_values[i], was_quoted));
+            quoted_flags.push_back(was_quoted);
 
             if (was_quoted) {
                 ++pos;
@@ -1011,6 +1066,17 @@ public:
             } else {
                 pos += raw_values[i].size();
             }
+        }
+
+        size_t keep = Parser::strip_inline_comment(raw_values, quoted_flags);
+        raw_values.resize(keep);
+        typed_values.resize(keep);
+        Parser::check_extra_tokens(raw_values, record.fields.size(), line_num);
+
+        for (size_t i = 0; i < record.fields.size(); ++i) {
+            record.values[record.fields[i]] = (i < typed_values.size())
+                ? typed_values[i]
+                : Value(nullptr);
         }
 
         return record;
@@ -1206,8 +1272,11 @@ private:
     static std::string quote_if_needed(const std::string& s) {
         if (s.empty()) return "\"\"";
 
+        // A leading '#' would start an inline comment in the values section
+        // and silently drop the rest of the row on re-parse
         bool needs_quote = (s == "true" || s == "false" || s == "null" ||
-                           s[0] == ':' || s.find(' ') != std::string::npos ||
+                           s[0] == ':' || s[0] == '#' ||
+                           s.find(' ') != std::string::npos ||
                            s.find('\t') != std::string::npos ||
                            s.find('"') != std::string::npos ||
                            s.find('\n') != std::string::npos ||

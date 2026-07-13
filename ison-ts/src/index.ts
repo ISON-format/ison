@@ -193,6 +193,40 @@ export class ISONSyntaxError extends Error {
   }
 }
 
+/**
+ * A raw row token plus whether it appeared quoted in the source
+ */
+interface RowToken {
+  token: string;
+  wasQuoted: boolean;
+}
+
+/**
+ * Return the leading tokens that are data: an unquoted token whose first
+ * character is '#' begins an inline comment, discarding it and everything
+ * after it. Quoted tokens are always data.
+ */
+function stripInlineComment(tokens: RowToken[]): RowToken[] {
+  for (let i = 0; i < tokens.length; i++) {
+    if (!tokens[i].wasQuoted && tokens[i].token.startsWith("#")) {
+      return tokens.slice(0, i);
+    }
+  }
+  return tokens;
+}
+
+/**
+ * Reject rows with more values than fields instead of silently truncating
+ */
+function checkExtraTokens(tokens: RowToken[], fieldCount: number, line?: number): void {
+  if (tokens.length <= fieldCount) return;
+  throw new ISONSyntaxError(
+    `Row has ${tokens.length} values but only ${fieldCount} fields ` +
+    `(extra value: ${JSON.stringify(tokens[fieldCount].token)})`,
+    line
+  );
+}
+
 class Parser {
   private pos = 0;
   private line = 1;
@@ -271,8 +305,8 @@ class Parser {
     while (this.pos < this.text.length) {
       const line = this.peekLine();
 
-      // Empty line or new block = end of current block
-      if (!line || line.match(/^[a-z]+\./)) {
+      // Empty line or new block header = end of current block
+      if (!line || this.looksLikeHeader(line)) {
         break;
       }
 
@@ -289,14 +323,16 @@ class Parser {
         continue;
       }
 
-      const values = this.tokenizeLine(line);
-      if (values.length === 0) {
-        break; // empty line ends block
+      const tokens = stripInlineComment(this.tokenizeRow(line));
+      if (tokens.length === 0) {
+        continue; // line held nothing but an inline comment
       }
+      checkExtraTokens(tokens, block.fields.length, this.line);
 
       const row: Row = {};
-      for (let i = 0; i < block.fields.length && i < values.length; i++) {
-        row[block.fields[i]] = this.parseValue(values[i]);
+      for (let i = 0; i < block.fields.length; i++) {
+        row[block.fields[i]] =
+          i < tokens.length ? this.parseValue(tokens[i].token, tokens[i].wasQuoted) : null;
       }
 
       if (inSummary) {
@@ -345,6 +381,57 @@ class Parser {
     return tokens;
   }
 
+  /**
+   * Tokenize a data row, tracking whether each token was quoted. Unlike
+   * tokenizeLine, no comment pre-stripping happens here: inline comments are
+   * handled at the token level (see stripInlineComment) so that quoted
+   * tokens containing '#' are never mistaken for comments.
+   */
+  private tokenizeRow(line: string): RowToken[] {
+    const tokens: RowToken[] = [];
+    let i = 0;
+
+    while (i < line.length) {
+      // Skip whitespace
+      while (i < line.length && (line[i] === " " || line[i] === "\t")) {
+        i++;
+      }
+
+      if (i >= line.length) break;
+
+      if (line[i] === '"') {
+        const [token, newPos] = this.parseQuotedString(line, i);
+        tokens.push({ token, wasQuoted: true });
+        i = newPos;
+      } else {
+        const start = i;
+        while (i < line.length && line[i] !== " " && line[i] !== "\t") {
+          i++;
+        }
+        tokens.push({ token: line.substring(start, i), wasQuoted: false });
+      }
+    }
+
+    return tokens;
+  }
+
+  /**
+   * A line ends the current block only when the entire line is a single
+   * 'kind.name' token with both parts valid identifiers — a data token that
+   * merely starts with 'word.' must not terminate the block.
+   */
+  private looksLikeHeader(line: string): boolean {
+    if (/\s/.test(line) || !line.includes(".")) {
+      return false;
+    }
+    const parts = line.split(".");
+    if (parts.length !== 2) {
+      return false;
+    }
+    const identifier = /^[a-zA-Z_][a-zA-Z0-9_-]*$/;
+    return identifier.test(parts[0]) && identifier.test(parts[1]);
+  }
+
   private findCommentStart(line: string): number {
     let inQuote = false;
     for (let i = 0; i < line.length; i++) {
@@ -389,7 +476,13 @@ class Parser {
     throw new ISONSyntaxError("Unterminated string", this.line);
   }
 
-  private parseValue(token: string): Value {
+  private parseValue(token: string, wasQuoted = false): Value {
+    // Quoted tokens are always literal strings — never re-interpreted as
+    // null/bool/number/reference (otherwise "123" could not round-trip)
+    if (wasQuoted) {
+      return token;
+    }
+
     // Null
     if (token === "null" || token === "~") {
       return null;
@@ -589,13 +682,23 @@ class Serializer {
   }
 
   private serializeString(s: string): string {
-    // Check if quoting is needed
+    if (s === "") {
+      return '""';
+    }
+
+    // Check if quoting is needed. '\r' and '\\' would be emitted raw and
+    // corrupt on re-parse; a leading '#' would turn the token into an inline
+    // comment and silently lose data; a bare 'kind.name' lookalike would be
+    // mistaken for a block header on re-parse and end the block early.
     const needsQuotes =
+      this.looksLikeBlockHeader(s) ||
       s.includes(" ") ||
       s.includes("\t") ||
       s.includes("\n") ||
+      s.includes("\r") ||
       s.includes('"') ||
       s.includes("\\") ||
+      s.startsWith("#") ||
       s === "true" ||
       s === "false" ||
       s === "null" ||
@@ -616,6 +719,15 @@ class Serializer {
 
     return `"${escaped}"`;
   }
+
+  /**
+   * A bare token shaped like a block header — exactly one '.', both halves
+   * valid identifiers (e.g. 'a.true', 'object.config') — would be re-parsed
+   * as the start of a new block, so it must be quoted to stay data.
+   */
+  private looksLikeBlockHeader(s: string): boolean {
+    return /^[a-zA-Z_][a-zA-Z0-9_-]*\.[a-zA-Z_][a-zA-Z0-9_-]*$/.test(s);
+  }
 }
 
 // =============================================================================
@@ -626,8 +738,10 @@ class ISONLParser {
   parse(text: string): Document {
     const doc = new Document();
     const blockMap = new Map<string, Block>();
+    let lineNum = 0;
 
     for (const line of text.split("\n")) {
+      lineNum++;
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#")) continue;
 
@@ -666,11 +780,15 @@ class ISONLParser {
         doc.blocks.push(block);
       }
 
-      // Parse values
-      const values = this.tokenizeValues(valuesPart);
+      // Parse values: drop inline comments (unquoted leading-'#' tokens),
+      // then reject rows with more values than fields
+      const values = stripInlineComment(this.tokenizeValues(valuesPart));
+      checkExtraTokens(values, block.fields.length, lineNum);
+
       const row: Row = {};
-      for (let i = 0; i < block.fields.length && i < values.length; i++) {
-        row[block.fields[i]] = this.parseValue(values[i].token, values[i].wasQuoted);
+      for (let i = 0; i < block.fields.length; i++) {
+        row[block.fields[i]] =
+          i < values.length ? this.parseValue(values[i].token, values[i].wasQuoted) : null;
       }
       block.rows.push(row);
     }
@@ -855,6 +973,7 @@ class ISONLSerializer {
       s.includes("\r") ||
       s.includes('"') ||
       s.includes("\\") ||
+      s.startsWith("#") ||
       s === "true" ||
       s === "false" ||
       s === "null" ||

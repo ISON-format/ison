@@ -53,10 +53,11 @@ function parseISON(text: string): ISONDocument {
 			currentBlock.fields = trimmed.split(/\s+/).map(f => f.split(':')[0]);
 		} else {
 			// Data row
-			const values = parseValues(trimmed);
+			const tokens = stripInlineComment(parseValues(trimmed));
+			checkExtraTokens(tokens, currentBlock.fields.length);
 			const row: Record<string, any> = {};
 			currentBlock.fields.forEach((field, i) => {
-				row[field] = values[i] ?? null;
+				row[field] = i < tokens.length ? tokens[i].value : null;
 			});
 			currentBlock.rows.push(row);
 		}
@@ -79,11 +80,33 @@ const ESCAPE_MAP: Record<string, string> = {
 	'|': '|',
 };
 
-function parseValues(line: string): any[] {
-	const values: any[] = [];
+interface ValueToken {
+	// Typed value (quoted tokens stay verbatim strings, unquoted are inferred)
+	value: any;
+	// Raw token text (unescaped content for quoted tokens)
+	raw: string;
+	// Whether the token started with a quote — quoted tokens are always data
+	quoted: boolean;
+}
+
+function parseValues(line: string): ValueToken[] {
+	const tokens: ValueToken[] = [];
 	let current = '';
 	let inQuotes = false;
 	let quoteChar = '';
+	let tokenQuoted = false;
+
+	const pushToken = () => {
+		if (current || tokenQuoted) {
+			tokens.push({
+				value: tokenQuoted ? current : parseValue(current),
+				raw: current,
+				quoted: tokenQuoted,
+			});
+		}
+		current = '';
+		tokenQuoted = false;
+	};
 
 	for (let i = 0; i < line.length; i++) {
 		const char = line[i];
@@ -101,21 +124,40 @@ function parseValues(line: string): any[] {
 		} else if (char === '"' || char === "'") {
 			inQuotes = true;
 			quoteChar = char;
-		} else if (char === ' ' || char === '\t') {
-			if (current) {
-				values.push(parseValue(current));
-				current = '';
+			// Only a quote at the start of a token marks it as quoted data
+			if (current === '') {
+				tokenQuoted = true;
 			}
+		} else if (char === ' ' || char === '\t') {
+			pushToken();
 		} else {
 			current += char;
 		}
 	}
 
-	if (current) {
-		values.push(parseValue(current));
-	}
+	pushToken();
 
-	return values;
+	return tokens;
+}
+
+// An unquoted token whose first character is '#' begins an inline comment:
+// it and every token after it are discarded. Quoted tokens are always data.
+function stripInlineComment(tokens: ValueToken[]): ValueToken[] {
+	for (let i = 0; i < tokens.length; i++) {
+		if (!tokens[i].quoted && tokens[i].raw.startsWith('#')) {
+			return tokens.slice(0, i);
+		}
+	}
+	return tokens;
+}
+
+// Reject rows with more values than fields instead of silently truncating
+function checkExtraTokens(tokens: ValueToken[], fieldCount: number): void {
+	if (tokens.length <= fieldCount) return;
+	throw new Error(
+		`Row has ${tokens.length} values but only ${fieldCount} fields ` +
+			`(extra value: ${JSON.stringify(tokens[fieldCount].raw)})`,
+	);
 }
 
 function parseValue(str: string): any {
@@ -188,11 +230,16 @@ function formatValue(value: any, isonl = false): string {
 function quoteIfNeeded(value: string, isonl: boolean): string {
 	if (value === '') return '""';
 
+	// CR and backslash would be emitted raw and corrupt on re-parse; a leading
+	// '#' would turn the value into an inline comment and silently lose data
 	let needsQuote =
 		value.includes(' ') ||
 		value.includes('\t') ||
 		value.includes('"') ||
 		value.includes('\n') ||
+		value.includes('\r') ||
+		value.includes('\\') ||
+		value.startsWith('#') ||
 		value === 'true' ||
 		value === 'false' ||
 		value === 'null' ||
@@ -200,9 +247,8 @@ function quoteIfNeeded(value: string, isonl: boolean): string {
 		!isNaN(Number(value));
 
 	if (isonl) {
-		// CR, backslash, and pipe would corrupt the single-line pipe structure
-		needsQuote =
-			needsQuote || value.includes('\r') || value.includes('\\') || value.includes('|');
+		// Pipe would corrupt the single-line pipe structure
+		needsQuote = needsQuote || value.includes('|');
 	}
 
 	if (!needsQuote) return value;
@@ -271,11 +317,12 @@ function parseISONL(text: string): any[] {
 
 		const blockName = blockMatch[2];
 		const fields = parts[1].split(/\s+/).map(f => f.split(':')[0]);
-		const values = parseValues(parts[2]);
+		const tokens = stripInlineComment(parseValues(parts[2]));
+		checkExtraTokens(tokens, fields.length);
 
 		const row: Record<string, any> = { _block: blockName };
 		fields.forEach((field, i) => {
-			row[field] = values[i] ?? null;
+			row[field] = i < tokens.length ? tokens[i].value : null;
 		});
 
 		results.push(row);

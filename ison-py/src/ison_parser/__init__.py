@@ -532,7 +532,7 @@ class Parser:
 
         # Track which tokens were quoted
         values = []
-        token_idx = 0
+        quoted_flags = []
         pos = 0
 
         for raw_token in raw_tokens:
@@ -543,6 +543,7 @@ class Parser:
             was_quoted = pos < len(line) and line[pos] == '"'
             typed_value = TypeInferrer.infer(raw_token, was_quoted)
             values.append(typed_value)
+            quoted_flags.append(was_quoted)
 
             # Advance past this token
             if was_quoted:
@@ -555,6 +556,11 @@ class Parser:
                 pos += 1
             else:
                 pos += len(raw_token)
+
+        keep = self._strip_inline_comment(raw_tokens, quoted_flags)
+        raw_tokens = raw_tokens[:keep]
+        values = values[:keep]
+        self._check_extra_tokens(raw_tokens, len(fields), self.line_num + 1)
 
         # Build row dictionary
         row = {}
@@ -571,6 +577,34 @@ class Parser:
                 row[field_name] = value
 
         return row
+
+    @staticmethod
+    def _strip_inline_comment(raw_tokens: list[str],
+                              quoted_flags: list[bool]) -> int:
+        """
+        Return the number of leading tokens that are data: an unquoted
+        token starting with '#' begins an inline comment, ignoring it and
+        everything after it. Quoted tokens are always data.
+        """
+        for i, token in enumerate(raw_tokens):
+            if not quoted_flags[i] and token.startswith('#'):
+                return i
+        return len(raw_tokens)
+
+    @staticmethod
+    def _check_extra_tokens(raw_tokens: list[str], field_count: int,
+                            line_num: int) -> None:
+        """
+        Reject rows with more values than fields instead of silently
+        truncating them.
+        """
+        if len(raw_tokens) <= field_count:
+            return
+        raise ISONSyntaxError(
+            f"Row has {len(raw_tokens)} values but only {field_count} "
+            f"fields (extra value: {raw_tokens[field_count]!r})",
+            line_num, 0
+        )
 
     def _set_nested_value(self, obj: dict, path: str, value: Any):
         """Set a value in a nested dictionary using dot-path notation"""
@@ -714,15 +748,23 @@ class Serializer:
         if not s:
             return '""'
 
-        # Check if quoting is needed
+        # Check if quoting is needed. '\r' and '\\' would be emitted raw and
+        # corrupt on re-parse; a leading '#' would turn the line into a
+        # comment (or an inline comment) and silently lose data; a value
+        # shaped like 'kind.name' alone on a line would be re-parsed as a
+        # new block header.
         needs_quote = (
             ' ' in s or
             '\t' in s or
             '"' in s or
             '\n' in s or
+            '\r' in s or
+            '\\' in s or
+            s.startswith('#') or
             s in ('true', 'false', 'null') or
             s.startswith(':') or
-            cls._looks_like_number(s)
+            cls._looks_like_number(s) or
+            cls._looks_like_block_header(s)
         )
 
         if needs_quote:
@@ -744,6 +786,20 @@ class Serializer:
             return True
         except ValueError:
             return False
+
+    _HEADER_PART_PATTERN = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_-]*$')
+
+    @classmethod
+    def _looks_like_block_header(cls, s: str) -> bool:
+        """
+        Check if a string would be mistaken for a 'kind.name' block header
+        when emitted unquoted as the only token on a line.
+        """
+        parts = s.split('.')
+        if len(parts) != 2:
+            return False
+        return bool(cls._HEADER_PART_PATTERN.match(parts[0]) and
+                    cls._HEADER_PART_PATTERN.match(parts[1]))
 
 
 # =============================================================================
@@ -1132,6 +1188,7 @@ class ISONLParser:
 
         # Infer types for values
         typed_values = []
+        quoted_flags = []
         pos = 0
         for raw_value in raw_values:
             # Find this token to check if quoted
@@ -1139,6 +1196,7 @@ class ISONLParser:
                 pos += 1
             was_quoted = pos < len(values_str) and values_str[pos] == '"'
             typed_values.append(TypeInferrer.infer(raw_value, was_quoted))
+            quoted_flags.append(was_quoted)
             if was_quoted:
                 pos += 1
                 while pos < len(values_str) and values_str[pos] != '"':
@@ -1148,6 +1206,11 @@ class ISONLParser:
                 pos += 1
             else:
                 pos += len(raw_value)
+
+        keep = Parser._strip_inline_comment(raw_values, quoted_flags)
+        raw_values = raw_values[:keep]
+        typed_values = typed_values[:keep]
+        Parser._check_extra_tokens(raw_values, len(fields), line_num)
 
         # Zip fields and values
         values_dict = {}
@@ -1355,6 +1418,7 @@ class ISONLSerializer:
             '\r' in s or
             '\\' in s or
             '|' in s or
+            s.startswith('#') or
             s in ('true', 'false', 'null') or
             s.startswith(':')
         )

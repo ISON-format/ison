@@ -590,6 +590,158 @@ TEST(isonl_envelope_validation) {
 }
 
 // =============================================================================
+// Row Integrity Tests
+// =============================================================================
+
+TEST(extra_values_rejected) {
+    // Regression: rows with more values than fields must error, not truncate
+    bool threw = false;
+    try {
+        parse("table.t\na b\n1 2 3");
+    } catch (const ISONSyntaxError& e) {
+        threw = true;
+        ASSERT(std::string(e.what()).find("3 values") != std::string::npos);
+    }
+    ASSERT(threw);
+
+    // A quoted token is data, never a comment
+    threw = false;
+    try {
+        parse("table.t\na b\n1 2 \"#not-a-comment\"");
+    } catch (const ISONSyntaxError&) {
+        threw = true;
+    }
+    ASSERT(threw);
+
+    // ISONL
+    threw = false;
+    try {
+        loads_isonl("table.t|a b|1 2 3");
+    } catch (const ISONSyntaxError& e) {
+        threw = true;
+        ASSERT(std::string(e.what()).find("3 values") != std::string::npos);
+    }
+    ASSERT(threw);
+}
+
+TEST(inline_trailing_comment) {
+    // An unquoted token starting with '#' begins an inline comment
+    auto doc = parse("table.t\na b\n1 2 # note ignored");
+    ASSERT_EQ(as_int(doc["t"][0].at("a")), 1);
+    ASSERT_EQ(as_int(doc["t"][0].at("b")), 2);
+
+    auto doc2 = loads_isonl("table.t|a b|1 2 # note ignored");
+    ASSERT_EQ(as_int(doc2["t"][0].at("a")), 1);
+    ASSERT_EQ(as_int(doc2["t"][0].at("b")), 2);
+
+    // Comment mid-row: remaining fields are missing (null), not data
+    auto doc3 = parse("table.t\na b\n1 #tag");
+    ASSERT_EQ(as_int(doc3["t"][0].at("a")), 1);
+    ASSERT(is_null(doc3["t"][0].at("b")));
+
+    // Quoted tokens are always data, never comments
+    auto doc4 = parse("table.t\na b\n1 \"#tag\"");
+    ASSERT_EQ(as_int(doc4["t"][0].at("a")), 1);
+    ASSERT_EQ(as_string(doc4["t"][0].at("b")), "#tag");
+
+    // Serializer quotes leading-'#' strings so they round-trip as data
+    Document out_doc;
+    Block block("table", "t");
+    block.fields = {"a"};
+    Row row;
+    row["a"] = std::string("#tag");
+    block.rows.push_back(row);
+    out_doc.blocks.push_back(block);
+    auto roundtrip = parse(dumps(out_doc));
+    ASSERT_EQ(as_string(roundtrip["t"][0].at("a")), "#tag");
+}
+
+TEST(ison_roundtrip_property) {
+    // Explicit regression: header-shaped string values ('kind.name') must be
+    // quoted by the serializer, or a single-field row line like 'a.true'
+    // would be re-parsed as a NEW block header and split the block
+    {
+        Document doc;
+        Block block("table", "t");
+        block.fields = {"v"};
+        Row r1;
+        r1["v"] = std::string("a.true");
+        Row r2;
+        r2["v"] = std::string("object.config");
+        block.rows.push_back(r1);
+        block.rows.push_back(r2);
+        doc.blocks.push_back(block);
+
+        auto parsed = parse(dumps(doc));
+        ASSERT_EQ(parsed.size(), 1);
+        ASSERT_EQ(parsed.blocks[0].rows.size(), 2);
+        ASSERT_EQ(as_string(parsed.blocks[0].rows[0].at("v")), "a.true");
+        ASSERT_EQ(as_string(parsed.blocks[0].rows[1].at("v")), "object.config");
+    }
+
+    // Regular-format twin of isonl_roundtrip_property: random strings over a
+    // hostile alphabet must round-trip through dumps/parse.
+    // Deterministic LCG so failures are reproducible without <random>.
+    const char* alphabet[] = {
+        "a", "b", " ", "|", "\"", "\\", "\n", "\r", "\t",
+        ".", ":", "#", "0", "1", "true", "null"
+    };
+    const int alphabet_size = static_cast<int>(sizeof(alphabet) / sizeof(alphabet[0]));
+
+    uint64_t state = 20260713ULL;
+    auto next_int = [&state](int lo, int hi) -> int {
+        state = (state * 1103515245ULL + 12345ULL) % 2147483648ULL;
+        return lo + static_cast<int>(state % static_cast<uint64_t>(hi - lo + 1));
+    };
+
+    for (int trial = 0; trial < 300; ++trial) {
+        int num_fields = next_int(1, 4);
+        std::vector<std::string> fields;
+        for (int i = 0; i < num_fields; ++i) {
+            fields.push_back("f" + std::to_string(i));
+        }
+
+        int num_rows = next_int(1, 3);
+        std::vector<Row> rows;
+        for (int r = 0; r < num_rows; ++r) {
+            Row row;
+            for (int f = 0; f < num_fields; ++f) {
+                int len = next_int(0, 12);
+                std::string value;
+                for (int k = 0; k < len; ++k) {
+                    value += alphabet[next_int(0, alphabet_size - 1)];
+                }
+                row[fields[f]] = value;
+            }
+            rows.push_back(row);
+        }
+
+        Document doc;
+        Block block("table", "t");
+        block.fields = fields;
+        block.rows = rows;
+        doc.blocks.push_back(block);
+
+        std::string out = dumps(doc);
+        auto parsed = parse(out);
+
+        ASSERT_EQ(parsed.size(), 1);
+        ASSERT_EQ(parsed.blocks[0].rows.size(), rows.size());
+        for (size_t r = 0; r < rows.size(); ++r) {
+            for (size_t f = 0; f < fields.size(); ++f) {
+                const Value& got = parsed.blocks[0].rows[r].at(fields[f]);
+                const std::string& expected = as_string(rows[r].at(fields[f]));
+                if (!is_string(got) || as_string(got) != expected) {
+                    throw std::runtime_error(
+                        "trial " + std::to_string(trial) + " row " + std::to_string(r) +
+                        " field " + fields[f] + ": round-trip mismatch, doc: " + out);
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
 // JSON Conversion Tests
 // =============================================================================
 
@@ -757,6 +909,11 @@ int main() {
     RUN_TEST(isonl_escaping_integrity);
     RUN_TEST(isonl_roundtrip_property);
     RUN_TEST(isonl_envelope_validation);
+
+    // Row integrity
+    RUN_TEST(extra_values_rejected);
+    RUN_TEST(inline_trailing_comment);
+    RUN_TEST(ison_roundtrip_property);
 
     // JSON
     RUN_TEST(to_json);

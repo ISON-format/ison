@@ -447,7 +447,7 @@ impl<'a> Parser<'a> {
         };
 
         let field_tokens = self.tokenize_line(&fields_line);
-        for token in field_tokens {
+        for (token, _) in field_tokens {
             if let Some(colon_idx) = token.find(':') {
                 let field_name = token[..colon_idx].to_string();
                 let field_type = token[colon_idx + 1..].to_string();
@@ -468,9 +468,7 @@ impl<'a> Parser<'a> {
             };
 
             // Empty line or new block = end of current block
-            if line.is_empty() || (line.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false)
-                && line.contains('.'))
-            {
+            if line.is_empty() || Self::looks_like_header(&line) {
                 break;
             }
 
@@ -487,16 +485,28 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            let values = self.tokenize_line(&line);
+            let mut values = self.tokenize_line(&line);
+
+            // An unquoted token starting with '#' begins an inline comment
+            let keep = strip_inline_comment(&values);
+            values.truncate(keep);
             if values.is_empty() {
-                break;
+                continue;
             }
+
+            // More values than fields is an error, not a silent truncation
+            check_extra_tokens(&values, block.fields.len(), Some(self.line.saturating_sub(1)))?;
 
             let mut row = Row::new();
             for (i, field) in block.fields.iter().enumerate() {
-                if i < values.len() {
-                    row.insert(field.clone(), self.parse_value(&values[i])?);
-                }
+                let value = match values.get(i) {
+                    // Quoted tokens keep their string type
+                    Some((token, true)) => Value::String(token.clone()),
+                    Some((token, false)) => self.parse_value(token)?,
+                    // Missing trailing values pad with null
+                    None => Value::Null,
+                };
+                row.insert(field.clone(), value);
             }
 
             if in_summary {
@@ -509,25 +519,16 @@ impl<'a> Parser<'a> {
         Ok(Some(block))
     }
 
-    fn tokenize_line(&self, line: &str) -> Vec<String> {
+    /// Tokenize a line into `(token, was_quoted)` pairs.
+    ///
+    /// Inline comments are deliberately NOT stripped here at the string
+    /// level (the old approach corrupted quoted values containing `#`).
+    /// Instead, `strip_inline_comment` applies the token-level rule: an
+    /// unquoted token starting with `#` begins an inline comment.
+    fn tokenize_line(&self, line: &str) -> Vec<(String, bool)> {
         let mut tokens = Vec::new();
-        let mut chars: Vec<char> = line.chars().collect();
+        let chars: Vec<char> = line.chars().collect();
         let mut i = 0;
-
-        // Remove inline comments
-        let mut in_quote = false;
-        let mut comment_start = None;
-        for (idx, &ch) in chars.iter().enumerate() {
-            if ch == '"' && (idx == 0 || chars[idx - 1] != '\\') {
-                in_quote = !in_quote;
-            } else if ch == '#' && !in_quote {
-                comment_start = Some(idx);
-                break;
-            }
-        }
-        if let Some(start) = comment_start {
-            chars.truncate(start);
-        }
 
         while i < chars.len() {
             // Skip whitespace
@@ -542,7 +543,7 @@ impl<'a> Parser<'a> {
             // Quoted string
             if chars[i] == '"' {
                 let (token, new_pos) = self.parse_quoted_string(&chars, i);
-                tokens.push(token);
+                tokens.push((token, true));
                 i = new_pos;
             } else {
                 // Unquoted token
@@ -550,11 +551,32 @@ impl<'a> Parser<'a> {
                 while i < chars.len() && chars[i] != ' ' && chars[i] != '\t' {
                     i += 1;
                 }
-                tokens.push(chars[start..i].iter().collect());
+                tokens.push((chars[start..i].iter().collect(), false));
             }
         }
 
         tokens
+    }
+
+    /// Check if a line looks like a block header: a single whitespace-free
+    /// token of the form `ident.ident` (mirrors the Python parser's
+    /// `_looks_like_header`). Serialized data rows can never match this
+    /// because the serializer quotes strings containing `.`.
+    fn looks_like_header(line: &str) -> bool {
+        fn is_identifier(s: &str) -> bool {
+            let mut chars = s.chars();
+            match chars.next() {
+                Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+                _ => return false,
+            }
+            chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        }
+
+        if line.split_whitespace().count() != 1 {
+            return false;
+        }
+        let parts: Vec<&str> = line.split('.').collect();
+        parts.len() == 2 && is_identifier(parts[0]) && is_identifier(parts[1])
     }
 
     fn parse_quoted_string(&self, chars: &[char], start: usize) -> (String, usize) {
@@ -710,6 +732,43 @@ impl<'a> Parser<'a> {
 }
 
 // =============================================================================
+// Row integrity helpers (shared by the regular and ISONL parsers)
+// =============================================================================
+
+/// Return the number of leading tokens that are data: an unquoted token
+/// whose first character is `#` begins an inline comment, discarding it and
+/// every token after it. Quoted tokens are always data.
+fn strip_inline_comment(tokens: &[(String, bool)]) -> usize {
+    for (i, (token, was_quoted)) in tokens.iter().enumerate() {
+        if !was_quoted && token.starts_with('#') {
+            return i;
+        }
+    }
+    tokens.len()
+}
+
+/// Reject rows with more values than fields instead of silently truncating
+/// them. Missing trailing values are still allowed (they pad with null).
+fn check_extra_tokens(
+    tokens: &[(String, bool)],
+    field_count: usize,
+    line: Option<usize>,
+) -> Result<()> {
+    if tokens.len() <= field_count {
+        return Ok(());
+    }
+    Err(ISONError {
+        message: format!(
+            "Row has {} values but only {} fields (extra value: {:?})",
+            tokens.len(),
+            field_count,
+            tokens[field_count].0
+        ),
+        line,
+    })
+}
+
+// =============================================================================
 // Serializer
 // =============================================================================
 
@@ -822,15 +881,28 @@ impl Serializer {
     }
 
     fn serialize_string(&self, s: &str) -> String {
+        if s.is_empty() {
+            return "\"\"".to_string();
+        }
+
+        // '\r' and '\\' would be emitted raw and corrupt on re-parse; a
+        // leading '#' would turn the value into an inline comment (or the
+        // line into a whole-line comment) and silently lose data.
         let needs_quotes = s.contains(' ')
             || s.contains('\t')
             || s.contains('\n')
+            || s.contains('\r')
             || s.contains('"')
             || s.contains('\\')
-            || s.contains('.')  // Avoid confusion with block headers (type.name)
+            // Any '.' is quoted; this subsumes the header-shaped-value rule
+            // ('ident.ident' like "a.true" or "object.config" would
+            // otherwise be re-parsed as a new block header, splitting the
+            // block on re-parse).
+            || s.contains('.')
             || s == "true"
             || s == "false"
             || s == "null"
+            || s.starts_with('#')
             || s.starts_with(':')
             || s.parse::<f64>().is_ok();
 
@@ -901,9 +973,11 @@ fn split_isonl_sections(line: &str) -> Vec<String> {
 
 /// Tokenize the values section of an ISONL line.
 ///
-/// Returns `(token, was_quoted)` pairs. Unlike regular ISON lines, ISONL has
-/// no inline comments (comments are whole lines only), so `#` is never
-/// stripped here. Quoted tokens keep their string type during parsing.
+/// Returns `(token, was_quoted)` pairs. `#` is never stripped at the string
+/// level here; inline comments are handled token-level by
+/// `strip_inline_comment` (an unquoted token starting with `#`), so quoted
+/// values containing `#` are never corrupted. Quoted tokens keep their
+/// string type during parsing.
 fn tokenize_isonl_values(line: &str) -> Vec<(String, bool)> {
     let chars: Vec<char> = line.chars().collect();
     let mut tokens = Vec::new();
@@ -980,6 +1054,7 @@ fn isonl_quote_if_needed(s: &str) -> String {
         || s == "true"
         || s == "false"
         || s == "null"
+        || s.starts_with('#')
         || s.starts_with(':')
         || s.parse::<f64>().is_ok();
 
@@ -1119,20 +1194,26 @@ pub fn parse_isonl(text: &str) -> Result<Document> {
 
         // Parse values (quoted tokens keep their string type)
         let parser = Parser::new("");
-        let values = tokenize_isonl_values(values_part);
-        let mut row = Row::new();
+        let mut values = tokenize_isonl_values(values_part);
+
+        // An unquoted token starting with '#' begins an inline comment
+        let keep = strip_inline_comment(&values);
+        values.truncate(keep);
 
         let block = &doc.blocks[block_idx];
+
+        // More values than fields is an error, not a silent truncation
+        check_extra_tokens(&values, block.fields.len(), Some(line_num + 1))?;
+
+        let mut row = Row::new();
         for (i, field) in block.fields.iter().enumerate() {
-            if i < values.len() {
-                let (token, was_quoted) = &values[i];
-                let value = if *was_quoted {
-                    Value::String(token.clone())
-                } else {
-                    parser.parse_value(token)?
-                };
-                row.insert(field.clone(), value);
-            }
+            let value = match values.get(i) {
+                Some((token, true)) => Value::String(token.clone()),
+                Some((token, false)) => parser.parse_value(token)?,
+                // Missing trailing values pad with null
+                None => Value::Null,
+            };
+            row.insert(field.clone(), value);
         }
 
         doc.blocks[block_idx].rows.push(row);
@@ -1977,5 +2058,159 @@ id name email
         let parsed = parse_isonl(&dumps_isonl(&doc).unwrap()).unwrap();
         assert_eq!(parsed.blocks[0].kind, "table");
         assert_eq!(parsed.blocks[0].name, "v1.2");
+    }
+
+    #[test]
+    fn test_extra_values_rejected() {
+        // Regression: rows with more values than fields must error, not truncate
+        let err = parse("table.t\na b\n1 2 3").unwrap_err();
+        assert!(
+            err.to_string().contains("3 values"),
+            "unexpected error message: {}",
+            err
+        );
+
+        // A quoted token is data, never a comment — still an extra value
+        assert!(parse("table.t\na b\n1 2 \"#not-a-comment\"").is_err());
+
+        // ISONL
+        let err = parse_isonl("table.t|a b|1 2 3").unwrap_err();
+        assert!(
+            err.to_string().contains("3 values"),
+            "unexpected error message: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_inline_trailing_comment() {
+        // An unquoted token starting with '#' begins an inline comment
+        let doc = parse("table.t\na b\n1 2 # note ignored").unwrap();
+        let row = &doc.blocks[0].rows[0];
+        assert_eq!(row.get("a"), Some(&Value::Int(1)));
+        assert_eq!(row.get("b"), Some(&Value::Int(2)));
+        assert_eq!(row.len(), 2);
+
+        let doc = parse_isonl("table.t|a b|1 2 # note ignored").unwrap();
+        let row = &doc.blocks[0].rows[0];
+        assert_eq!(row.get("a"), Some(&Value::Int(1)));
+        assert_eq!(row.get("b"), Some(&Value::Int(2)));
+        assert_eq!(row.len(), 2);
+
+        // Comment mid-row: remaining fields are missing (null), not data
+        let doc = parse("table.t\na b\n1 #tag").unwrap();
+        let row = &doc.blocks[0].rows[0];
+        assert_eq!(row.get("a"), Some(&Value::Int(1)));
+        assert_eq!(row.get("b"), Some(&Value::Null));
+
+        // Quoted tokens are always data, never comments
+        let doc = parse("table.t\na b\n1 \"#tag\"").unwrap();
+        assert_eq!(
+            doc.blocks[0].rows[0].get("b"),
+            Some(&Value::String("#tag".to_string()))
+        );
+
+        // Serializer quotes leading-'#' strings so they round-trip as data
+        let mut row = Row::new();
+        row.insert("a".to_string(), Value::String("#tag".to_string()));
+        let doc = make_string_block("table", "t", &["a"], vec![row.clone()]);
+        let parsed = parse(&dumps(&doc, false)).unwrap();
+        assert_eq!(parsed.blocks[0].rows, vec![row]);
+
+        // A quoted value containing '#' mid-string is data, not a comment
+        let doc = parse("table.t\na b\n1 \"a#b\"").unwrap();
+        assert_eq!(
+            doc.blocks[0].rows[0].get("b"),
+            Some(&Value::String("a#b".to_string()))
+        );
+
+        // Regression pin: the old string-level '#' strip desynced on an
+        // escaped backslash before a closing quote and then truncated a
+        // quoted value containing '#'. Must survive a full round-trip now.
+        let mut row = Row::new();
+        row.insert("a".to_string(), Value::String("x\\".to_string()));
+        row.insert("b".to_string(), Value::String("a #b".to_string()));
+        let doc = make_string_block("table", "t", &["a", "b"], vec![row.clone()]);
+        let out = dumps(&doc, false);
+        let parsed = parse(&out)
+            .unwrap_or_else(|e| panic!("round-trip parse failed ({}) for {:?}", e, out));
+        assert_eq!(parsed.blocks[0].rows, vec![row], "corrupted by {:?}", out);
+    }
+
+    #[test]
+    fn test_ison_roundtrip_property() {
+        // Header-shaped string values ('ident.ident', e.g. "a.true" or
+        // "object.config") must be quoted by the serializer, otherwise a
+        // single-field row line is re-parsed as a NEW block header and the
+        // round-trip splits the block.
+        let header_shaped: Vec<Row> = ["a.true", "object.config"]
+            .iter()
+            .map(|s| {
+                let mut row = Row::new();
+                row.insert("v".to_string(), Value::String(s.to_string()));
+                row
+            })
+            .collect();
+        let doc = make_string_block("table", "t", &["v"], header_shaped.clone());
+        let out = dumps(&doc, false);
+        let parsed = parse(&out)
+            .unwrap_or_else(|e| panic!("parse failed ({}) for {:?}", e, out));
+        assert_eq!(
+            parsed.blocks.len(),
+            1,
+            "header-shaped value split the block: {:?}",
+            out
+        );
+        assert_eq!(parsed.blocks[0].rows, header_shaped, "corrupted by {:?}", out);
+
+        // Regular-format twin of test_isonl_roundtrip_property: random
+        // strings over a hostile alphabet must round-trip through
+        // dumps/parse. Deterministic LCG so no rand crate is needed.
+        struct Lcg {
+            state: u64,
+        }
+        impl Lcg {
+            fn next_int(&mut self, lo: u64, hi: u64) -> u64 {
+                self.state = (self.state * 1103515245 + 12345) % 2147483648;
+                lo + (self.state % (hi - lo + 1))
+            }
+        }
+
+        let alphabet: [&str; 16] = [
+            "a", "b", " ", "|", "\"", "\\", "\n", "\r", "\t", ".", ":", "#", "0", "1", "true",
+            "null",
+        ];
+        let mut rng = Lcg { state: 20260713 };
+
+        for trial in 0..300 {
+            let num_fields = rng.next_int(1, 4) as usize;
+            let fields: Vec<String> = (0..num_fields).map(|i| format!("f{}", i)).collect();
+            let field_refs: Vec<&str> = fields.iter().map(|f| f.as_str()).collect();
+
+            let num_rows = rng.next_int(1, 3) as usize;
+            let mut rows: Vec<Row> = Vec::new();
+            for _ in 0..num_rows {
+                let mut row = Row::new();
+                for f in &fields {
+                    let len = rng.next_int(0, 12) as usize;
+                    let mut s = String::new();
+                    for _ in 0..len {
+                        s.push_str(alphabet[rng.next_int(0, alphabet.len() as u64 - 1) as usize]);
+                    }
+                    row.insert(f.clone(), Value::String(s));
+                }
+                rows.push(row);
+            }
+
+            let doc = make_string_block("table", "t", &field_refs, rows.clone());
+            let out = dumps(&doc, false);
+            let parsed = parse(&out)
+                .unwrap_or_else(|e| panic!("trial {}: parse failed ({}) for {:?}", trial, e, out));
+            assert_eq!(
+                parsed.blocks[0].rows, rows,
+                "trial {}: {:?} -> {:?}",
+                trial, rows, out
+            );
+        }
     }
 }

@@ -56,14 +56,24 @@
     "languages": [
       {
         "id": "ison",
-        "aliases": ["ISON", "ison"],
-        "extensions": [".ison"],
+        "aliases": [
+          "ISON",
+          "ison"
+        ],
+        "extensions": [
+          ".ison"
+        ],
         "configuration": "./language-configuration.json"
       },
       {
         "id": "isonl",
-        "aliases": ["ISONL", "isonl"],
-        "extensions": [".isonl"],
+        "aliases": [
+          "ISONL",
+          "isonl"
+        ],
+        "extensions": [
+          ".isonl"
+        ],
         "configuration": "./language-configuration-isonl.json"
       }
     ],
@@ -128,7 +138,7 @@
   "devDependencies": {
     "@types/node": "^18.0.0",
     "@types/vscode": "^1.75.0",
-    "typescript": "^5.0.0",
-    "@vscode/vsce": "^2.22.0"
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.0.0"
   }
 }

@@ -11,6 +11,11 @@
 - **ISONL Envelope Validation**: `dumps_isonl()` now raises `ISONError` when a block kind, name, or field name contains characters that cannot survive an ISONL round-trip (pipe, quote, backslash, whitespace; plus `.` or leading `#` in kind) instead of silently emitting a corrupt line. Dots remain legal in block names (the parser splits the header on the first dot).
 - **Regression Tests**: Adversarial escaping round-trip test, a seeded 300-trial property test over a hostile character alphabet, and envelope validation tests.
 
+### Changed
+- **Extra Values Are Errors**: Rows (ISON and ISONL) with more values than declared fields now raise `ISONSyntaxError` instead of silently truncating the extras. Missing trailing values still parse as `null`.
+- **Inline Comments Formalized**: In a data row or ISONL values section, an unquoted token starting with `#` begins an inline comment (it and everything after it is ignored). Quoted tokens are always data. Previously inline comments only "worked" as a side effect of silent extra-value truncation.
+- **Regular ISON Quoting Hardened**: `dumps()` now quotes string values containing carriage returns or backslashes, values starting with `#` (previously a leading-`#` value at line start silently turned the whole row into a comment on re-parse), and values shaped like a `kind.name` block header (previously a single-field row value like `a.true` was re-parsed as a new block header).
+
 ## [1.0.1] - 2025-12-29
 
 ### Fixed

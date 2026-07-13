@@ -197,14 +197,7 @@ func (v Value) ToISON() string {
 	case TypeFloat:
 		return strconv.FormatFloat(v.FloatVal, 'f', -1, 64)
 	case TypeString:
-		if strings.ContainsAny(v.StringVal, " \t\n\"") || v.StringVal == "" {
-			escaped := strings.ReplaceAll(v.StringVal, "\\", "\\\\")
-			escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
-			escaped = strings.ReplaceAll(escaped, "\n", "\\n")
-			escaped = strings.ReplaceAll(escaped, "\t", "\\t")
-			return fmt.Sprintf("\"%s\"", escaped)
-		}
-		return v.StringVal
+		return quoteISONIfNeeded(v.StringVal)
 	case TypeReference:
 		return v.RefVal.ToISON()
 	default:
@@ -516,14 +509,22 @@ func (p *Parser) parseBlock(kind, name string) (*Block, error) {
 			continue
 		}
 
-		// Parse row
-		tokens := tokenizeLine(line)
+		// Parse row. Quoted tokens are always data; an unquoted token that
+		// starts with '#' begins an inline comment.
+		tokens, quotedFlags := tokenizeLineWithQuotes(line)
+		keep := stripInlineComment(tokens, quotedFlags)
+		tokens = tokens[:keep]
+		quotedFlags = quotedFlags[:keep]
+		if err := checkExtraTokens(tokens, len(block.Fields), p.pos+1); err != nil {
+			return nil, err
+		}
+
 		row := make(Row)
-		for i, token := range tokens {
-			if i < len(block.Fields) {
-				fieldInfo := block.Fields[i]
-				value := parseValue(token, fieldInfo.TypeHint)
-				row[fieldInfo.Name] = value
+		for i, fieldInfo := range block.Fields {
+			if i < len(tokens) {
+				row[fieldInfo.Name] = parseISONLValue(tokens[i], quotedFlags[i], fieldInfo.TypeHint)
+			} else {
+				row[fieldInfo.Name] = Null() // Missing trailing value pads null
 			}
 		}
 
@@ -804,6 +805,78 @@ func DumpsWithOptions(doc *Document, opts DumpsOptions) string {
 	return sb.String()
 }
 
+// headerPartPattern matches one half of a "kind.name" block header.
+var headerPartPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`)
+
+// looksLikeBlockHeader reports whether s would be mistaken for a "kind.name"
+// block header when emitted unquoted as the only token on a line: exactly one
+// '.', with both halves shaped like identifiers (e.g. "object.config").
+func looksLikeBlockHeader(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) != 2 {
+		return false
+	}
+	return headerPartPattern.MatchString(parts[0]) && headerPartPattern.MatchString(parts[1])
+}
+
+// quoteISONIfNeeded quotes and escapes a string for regular ISON output if
+// leaving it bare would corrupt the row structure or change its parsed type:
+// whitespace and quotes, '\r' and '\\' (which the escape chain must encode),
+// keyword and number-like strings, reference-like ':' prefixes, a leading
+// '#' that would otherwise start a comment and silently lose data, and
+// "kind.name" shapes that would otherwise start a new block.
+func quoteISONIfNeeded(s string) string {
+	if s == "" {
+		return `""`
+	}
+
+	needsQuote := strings.ContainsAny(s, " \t\"\n\r\\") ||
+		s == "true" || s == "false" || s == "null" ||
+		s == "TRUE" || s == "FALSE" || s == "NULL" || s == "~" ||
+		strings.HasPrefix(s, ":") ||
+		strings.HasPrefix(s, "#") ||
+		looksLikeBlockHeader(s)
+	if !needsQuote {
+		// Number-like strings must stay strings after re-parsing
+		if _, err := strconv.ParseFloat(s, 64); err == nil {
+			needsQuote = true
+		}
+	}
+	if !needsQuote {
+		return s
+	}
+
+	escaped := strings.ReplaceAll(s, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+	escaped = strings.ReplaceAll(escaped, "\n", "\\n")
+	escaped = strings.ReplaceAll(escaped, "\t", "\\t")
+	escaped = strings.ReplaceAll(escaped, "\r", "\\r")
+	return "\"" + escaped + "\""
+}
+
+// stripInlineComment returns the number of leading tokens that are data: an
+// unquoted token whose first character is '#' begins an inline comment,
+// discarding it and every token after it. Quoted tokens are always data.
+func stripInlineComment(tokens []string, quoted []bool) int {
+	for i, token := range tokens {
+		if !quoted[i] && strings.HasPrefix(token, "#") {
+			return i
+		}
+	}
+	return len(tokens)
+}
+
+// checkExtraTokens rejects rows that have more values than fields instead of
+// silently truncating them. Missing trailing values are still allowed (they
+// pad as null); only surplus values are an error.
+func checkExtraTokens(tokens []string, fieldCount, lineNum int) error {
+	if len(tokens) <= fieldCount {
+		return nil
+	}
+	return fmt.Errorf("line %d: row has %d values but only %d fields (extra value: %q)",
+		lineNum, len(tokens), fieldCount, tokens[fieldCount])
+}
+
 func padRight(s string, width int) string {
 	if len(s) >= width {
 		return s
@@ -867,7 +940,8 @@ func quoteISONLIfNeeded(s string) string {
 	needsQuote := strings.ContainsAny(s, " \t\"\n\r\\|") ||
 		s == "true" || s == "false" || s == "null" ||
 		s == "TRUE" || s == "FALSE" || s == "NULL" || s == "~" ||
-		strings.HasPrefix(s, ":")
+		strings.HasPrefix(s, ":") ||
+		strings.HasPrefix(s, "#")
 	if !needsQuote {
 		// Number-like strings must stay strings after re-parsing
 		if _, err := strconv.ParseFloat(s, 64); err == nil {
@@ -971,9 +1045,9 @@ func splitISONLSections(line string) []string {
 	return sections
 }
 
-// parseISONLValue parses a single ISONL value token. Tokens that were quoted
-// in the source are always strings; everything else goes through the normal
-// type inference.
+// parseISONLValue parses a single value token (shared by the regular ISON row
+// parser and the ISONL parser). Tokens that were quoted in the source are
+// always strings; everything else goes through the normal type inference.
 func parseISONLValue(token string, wasQuoted bool, typeHint string) Value {
 	if wasQuoted {
 		return String(token)
@@ -986,8 +1060,8 @@ func ParseISONL(text string) (*Document, error) {
 	doc := NewDocument()
 	lines := splitLines(text)
 
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
+	for lineIdx, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -1021,14 +1095,22 @@ func ParseISONL(text string) (*Document, error) {
 			}
 		}
 
-		// Parse row
+		// Parse row. Quoted tokens are always data; an unquoted token that
+		// starts with '#' begins an inline comment.
 		tokens, quotedFlags := tokenizeLineWithQuotes(parts[2])
+		keep := stripInlineComment(tokens, quotedFlags)
+		tokens = tokens[:keep]
+		quotedFlags = quotedFlags[:keep]
+		if err := checkExtraTokens(tokens, len(block.Fields), lineIdx+1); err != nil {
+			return nil, err
+		}
+
 		row := make(Row)
-		for i, token := range tokens {
-			if i < len(block.Fields) {
-				fieldInfo := block.Fields[i]
-				value := parseISONLValue(token, quotedFlags[i], fieldInfo.TypeHint)
-				row[fieldInfo.Name] = value
+		for i, fieldInfo := range block.Fields {
+			if i < len(tokens) {
+				row[fieldInfo.Name] = parseISONLValue(tokens[i], quotedFlags[i], fieldInfo.TypeHint)
+			} else {
+				row[fieldInfo.Name] = Null() // Missing trailing value pads null
 			}
 		}
 		block.AddRow(row)
@@ -1115,13 +1197,24 @@ func ISONLStream(reader io.Reader) <-chan ISONLRecord {
 				fieldTypes[i] = ftype
 			}
 
-			// Parse row
+			// Parse row. Quoted tokens are always data; an unquoted token
+			// that starts with '#' begins an inline comment.
 			tokens, quotedFlags := tokenizeLineWithQuotes(parts[2])
+			keep := stripInlineComment(tokens, quotedFlags)
+			tokens = tokens[:keep]
+			quotedFlags = quotedFlags[:keep]
+			if len(tokens) > len(fields) {
+				// No error channel here: skip rows with extra values (like
+				// other malformed lines) instead of silently truncating them
+				continue
+			}
+
 			values := make(map[string]Value)
-			for i, token := range tokens {
-				if i < len(fields) {
-					value := parseISONLValue(token, quotedFlags[i], fieldTypes[i])
-					values[fields[i]] = value
+			for i, fname := range fields {
+				if i < len(tokens) {
+					values[fname] = parseISONLValue(tokens[i], quotedFlags[i], fieldTypes[i])
+				} else {
+					values[fname] = Null() // Missing trailing value pads null
 				}
 			}
 

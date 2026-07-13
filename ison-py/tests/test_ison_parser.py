@@ -841,6 +841,95 @@ def test_isonl_envelope_validation():
     print("[PASS] test_isonl_envelope_validation")
 
 
+def test_extra_values_rejected():
+    """Regression: rows with more values than fields must error, not truncate"""
+    # Regular ISON
+    try:
+        loads("table.t\na b\n1 2 3")
+        assert False, "should have rejected extra value"
+    except ISONSyntaxError as e:
+        assert "3 values" in str(e)
+
+    # A quoted token is data, never a comment
+    try:
+        loads('table.t\na b\n1 2 "#not-a-comment"')
+        assert False, "should have rejected quoted extra value"
+    except ISONSyntaxError:
+        pass
+
+    # ISONL
+    try:
+        loads_isonl("table.t|a b|1 2 3")
+        assert False, "should have rejected extra ISONL value"
+    except ISONSyntaxError as e:
+        assert "3 values" in str(e)
+
+    print("[PASS] test_extra_values_rejected")
+
+
+def test_inline_trailing_comment():
+    """An unquoted token starting with '#' begins an inline comment"""
+    doc = loads("table.t\na b\n1 2 # note ignored")
+    assert doc.blocks[0].rows[0] == {'a': 1, 'b': 2}
+
+    doc = loads_isonl("table.t|a b|1 2 # note ignored")
+    assert doc.blocks[0].rows[0] == {'a': 1, 'b': 2}
+
+    # Comment mid-row: remaining fields are missing, not data
+    doc = loads('table.t\na b\n1 #tag')
+    assert doc.blocks[0].rows[0] == {'a': 1, 'b': None}
+
+    # Quoted tokens are always data, never comments
+    doc = loads('table.t\na b\n1 "#tag"')
+    assert doc.blocks[0].rows[0] == {'a': 1, 'b': '#tag'}
+
+    # Serializer quotes leading-'#' strings so they round-trip as data
+    doc = Document()
+    doc.blocks.append(Block(kind='table', name='t', fields=['a'],
+                            rows=[{'a': '#tag'}]))
+    assert loads(dumps(doc)).blocks[0].rows[0] == {'a': '#tag'}
+
+    print("[PASS] test_inline_trailing_comment")
+
+
+def test_ison_roundtrip_property():
+    """Property test: regular ISON round-trip over a hostile alphabet"""
+    import random
+
+    # Header-shaped values must be quoted, or a single-value row line like
+    # 'a.true' is re-parsed as a new block header
+    doc = Document()
+    doc.blocks.append(Block(kind='table', name='t', fields=['v'],
+                            rows=[{'v': 'a.true'}, {'v': 'object.config'}]))
+    parsed = loads(dumps(doc))
+    assert len(parsed.blocks) == 1
+    assert [r['v'] for r in parsed.blocks[0].rows] == ['a.true', 'object.config']
+
+    rng = random.Random(20260713)
+    alphabet = list('ab |"\\\n\r\t.:#01') + ['true', 'null']
+
+    for trial in range(300):
+        fields = [f'f{i}' for i in range(rng.randint(1, 4))]
+        rows = []
+        for _ in range(rng.randint(1, 3)):
+            row = {}
+            for f in fields:
+                row[f] = ''.join(
+                    rng.choice(alphabet) for _ in range(rng.randint(0, 12))
+                )
+            rows.append(row)
+
+        doc = Document()
+        doc.blocks.append(Block(kind='table', name='t', fields=fields, rows=rows))
+        out = dumps(doc)
+        parsed = loads(out)
+        assert parsed.blocks[0].rows == rows, (
+            f"trial {trial}: {rows!r} -> {out!r} -> {parsed.blocks[0].rows!r}"
+        )
+
+    print("[PASS] test_ison_roundtrip_property")
+
+
 def run_all_tests():
     """Run all tests"""
     print("Running ISON v1.0 Parser Tests\n" + "=" * 40)
@@ -886,6 +975,9 @@ def run_all_tests():
     test_isonl_escaping_integrity()
     test_isonl_roundtrip_property()
     test_isonl_envelope_validation()
+    test_extra_values_rejected()
+    test_inline_trailing_comment()
+    test_ison_roundtrip_property()
 
     print("\n" + "=" * 40)
     print("All tests passed!")

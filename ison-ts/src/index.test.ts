@@ -440,6 +440,91 @@ describe("ISONL Envelope Validation", () => {
   });
 });
 
+describe("Extra Values Rejected", () => {
+  it("should reject regular rows with more values than fields", () => {
+    // Regression: rows with more values than fields must error, not truncate
+    expect(() => loads("table.t\na b\n1 2 3")).toThrow(/3 values/);
+  });
+
+  it("should reject a quoted extra value (quoted tokens are data, never comments)", () => {
+    expect(() => loads('table.t\na b\n1 2 "#not-a-comment"')).toThrow(ISONSyntaxError);
+  });
+
+  it("should reject ISONL rows with more values than fields", () => {
+    expect(() => loadsIsonl("table.t|a b|1 2 3")).toThrow(/3 values/);
+  });
+});
+
+describe("Inline Trailing Comments", () => {
+  it("should ignore an unquoted '#' token and everything after it", () => {
+    const doc = loads("table.t\na b\n1 2 # note ignored");
+    expect(doc.blocks[0].rows[0]).toEqual({ a: 1, b: 2 });
+
+    const docL = loadsIsonl("table.t|a b|1 2 # note ignored");
+    expect(docL.blocks[0].rows[0]).toEqual({ a: 1, b: 2 });
+  });
+
+  it("should treat fields after a mid-row comment as missing, not data", () => {
+    const doc = loads("table.t\na b\n1 #tag");
+    expect(doc.blocks[0].rows[0]).toEqual({ a: 1, b: null });
+  });
+
+  it("should keep quoted tokens as data, never comments", () => {
+    const doc = loads('table.t\na b\n1 "#tag"');
+    expect(doc.blocks[0].rows[0]).toEqual({ a: 1, b: "#tag" });
+  });
+
+  it("should quote leading-'#' strings so they round-trip as data", () => {
+    const doc = makeIsonlDoc('table', 't', ['a'], [{ a: '#tag' }]);
+    expect(loads(dumps(doc)).blocks[0].rows[0]).toEqual({ a: '#tag' });
+  });
+});
+
+describe("ISON Round-Trip Property", () => {
+  it("should round-trip random strings over a hostile alphabet (regular format)", () => {
+    // Explicit check first: values shaped like a block header ('kind.name')
+    // must be quoted by the serializer, or re-parsing would split the block
+    const headerRows: Row[] = [{ v: 'a.true' }, { v: 'object.config' }];
+    const headerParsed = loads(dumps(makeIsonlDoc('table', 't', ['v'], headerRows)));
+    expect(headerParsed.blocks.length).toBe(1);
+    expect(headerParsed.blocks[0].rows).toEqual(headerRows);
+
+    // Deterministic LCG (no Math.random) — twin of the ISONL property test
+    let state = 20260713;
+    const nextState = (): number => {
+      state = (state * 1103515245 + 12345) % 2147483648;
+      return state;
+    };
+    const randInt = (lo: number, hi: number): number => lo + (nextState() % (hi - lo + 1));
+
+    const alphabet = ['a', 'b', ' ', '|', '"', '\\', '\n', '\r', '\t', '.', ':', '#', '0', '1', 'true', 'null'];
+
+    for (let trial = 0; trial < 300; trial++) {
+      const numFields = randInt(1, 4);
+      const fields = Array.from({ length: numFields }, (_, i) => `f${i}`);
+      const rows: Row[] = [];
+      const numRows = randInt(1, 3);
+      for (let r = 0; r < numRows; r++) {
+        const row: Row = {};
+        for (const f of fields) {
+          const len = randInt(0, 12);
+          let value = '';
+          for (let c = 0; c < len; c++) {
+            value += alphabet[randInt(0, alphabet.length - 1)];
+          }
+          row[f] = value;
+        }
+        rows.push(row);
+      }
+
+      const doc = makeIsonlDoc('table', 't', fields, rows);
+      const out = dumps(doc);
+      const parsed = loads(out);
+      expect(parsed.blocks[0].rows, `trial ${trial}: ${JSON.stringify(rows)} -> ${JSON.stringify(out)}`).toEqual(rows);
+    }
+  });
+});
+
 describe("fromDict", () => {
   it("should create document from plain object", () => {
     const data = {

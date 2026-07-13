@@ -6,6 +6,8 @@ import { describe, it, expect } from 'vitest';
 import {
   i,
   document,
+  parse,
+  parseSafe,
   ValidationError,
   generatePrompt,
   VERSION,
@@ -14,7 +16,7 @@ import {
 describe('ISONantic', () => {
   describe('Version', () => {
     it('should have version defined', () => {
-      expect(VERSION).toBe('1.0.0');
+      expect(VERSION).toBe('1.1.0');
     });
   });
 
@@ -326,6 +328,201 @@ describe('ISONantic', () => {
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.error).toBeInstanceOf(ValidationError);
+      }
+    });
+  });
+
+  describe('parse (ISON text, delegated to ison-ts)', () => {
+    const UserSchema = i.table('users', {
+      id: i.int(),
+      name: i.string(),
+      email: i.string().email(),
+      active: i.boolean().default(true),
+    });
+
+    it('should parse valid ISON text into typed rows', () => {
+      const isonText = [
+        'table.users',
+        'id name email active',
+        '1 Alice alice@example.com true',
+        '2 Bob bob@example.com false',
+      ].join('\n');
+
+      const users = parse(isonText, UserSchema);
+      expect(users).toEqual([
+        { id: 1, name: 'Alice', email: 'alice@example.com', active: true },
+        { id: 2, name: 'Bob', email: 'bob@example.com', active: false },
+      ]);
+    });
+
+    it('should apply schema defaults for missing columns', () => {
+      const isonText = [
+        'table.users',
+        'id name email',
+        '1 Alice alice@example.com',
+      ].join('\n');
+
+      const users = parse(isonText, UserSchema);
+      expect(users).toEqual([
+        { id: 1, name: 'Alice', email: 'alice@example.com', active: true },
+      ]);
+    });
+
+    it('should keep quoted tokens as strings', () => {
+      const schema = i.table('users', {
+        id: i.int(),
+        name: i.string(),
+      });
+      const isonText = [
+        'table.users',
+        'id name',
+        '1 "Alice Smith"',
+      ].join('\n');
+
+      expect(parse(isonText, schema)).toEqual([{ id: 1, name: 'Alice Smith' }]);
+    });
+
+    it('should throw ValidationError with field info for invalid rows', () => {
+      const isonText = [
+        'table.users',
+        'id name email',
+        '1 Alice not-an-email',
+        'oops Bob bob@example.com',
+      ].join('\n');
+
+      let caught: unknown;
+      try {
+        parse(isonText, UserSchema);
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(ValidationError);
+      const errors = (caught as ValidationError).errors;
+      expect(errors.some((e) => e.field === '[0].email' && /email/i.test(e.message))).toBe(true);
+      expect(errors.some((e) => e.field === '[1].id' && /number/i.test(e.message))).toBe(true);
+    });
+
+    it('should map ISON references to ISONReference objects', () => {
+      const OrderSchema = i.table('orders', {
+        id: i.int(),
+        user: i.ref(),
+        amount: i.number(),
+      });
+      const isonText = [
+        'table.orders',
+        'id user amount',
+        '1 :user:101 250.5',
+        '2 :42 100',
+      ].join('\n');
+
+      const orders = parse(isonText, OrderSchema);
+      expect(orders[0].user).toEqual({ id: '101', type: 'user' });
+      expect(orders[1].user).toEqual({ id: '42' });
+      expect(orders[0].amount).toBe(250.5);
+    });
+
+    it('should match blocks by bare name among multiple blocks', () => {
+      const isonText = [
+        'table.products',
+        'id title',
+        '1 Widget',
+        '',
+        'table.users',
+        'id name email',
+        '7 Carol carol@example.com',
+      ].join('\n');
+
+      const users = parse(isonText, UserSchema);
+      expect(users).toEqual([
+        { id: 7, name: 'Carol', email: 'carol@example.com', active: true },
+      ]);
+    });
+
+    it('should match blocks by full kind.name header', () => {
+      const schema = i.table('table.users', {
+        id: i.int(),
+        name: i.string(),
+      });
+      const isonText = [
+        'table.users',
+        'id name',
+        '1 Alice',
+      ].join('\n');
+
+      expect(parse(isonText, schema)).toEqual([{ id: 1, name: 'Alice' }]);
+    });
+
+    it('should throw ValidationError when the block is missing', () => {
+      const isonText = [
+        'table.products',
+        'id title',
+        '1 Widget',
+      ].join('\n');
+
+      let caught: unknown;
+      try {
+        parse(isonText, UserSchema);
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(ValidationError);
+      const errors = (caught as ValidationError).errors;
+      expect(errors[0].field).toBe('users');
+      expect(errors[0].message).toContain("Block 'users' not found");
+    });
+  });
+
+  describe('parseSafe', () => {
+    const UserSchema = i.table('users', {
+      id: i.int(),
+      name: i.string(),
+    });
+
+    it('should return success result for valid ISON text', () => {
+      const result = parseSafe(
+        ['table.users', 'id name', '1 Alice'].join('\n'),
+        UserSchema
+      );
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data).toEqual([{ id: 1, name: 'Alice' }]);
+      }
+    });
+
+    it('should return error result for invalid rows', () => {
+      const result = parseSafe(
+        ['table.users', 'id name', 'oops Alice'].join('\n'),
+        UserSchema
+      );
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toBeInstanceOf(ValidationError);
+        expect(result.error.errors[0].field).toBe('[0].id');
+      }
+    });
+
+    it('should return error result for missing blocks', () => {
+      const result = parseSafe(
+        ['table.products', 'id title', '1 Widget'].join('\n'),
+        UserSchema
+      );
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toBeInstanceOf(ValidationError);
+      }
+    });
+
+    it('should return error result for malformed ISON text', () => {
+      const result = parseSafe(
+        ['table.users', 'id name', '1 "unterminated'].join('\n'),
+        UserSchema
+      );
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toBeInstanceOf(ValidationError);
+        expect(result.error.message).toContain('Invalid ISON');
       }
     });
   });

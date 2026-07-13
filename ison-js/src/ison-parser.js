@@ -542,14 +542,19 @@
 
         _parseDataRow(fields, line) {
             const tokenizer = new Tokenizer(line, this.lineNum + 1);
-            const rawTokens = tokenizer.tokenize();
+            let rawTokens = tokenizer.tokenize();
             const tokenInfo = tokenizer.getTokenInfo();
 
-            const values = [];
+            let values = [];
             for (let i = 0; i < rawTokens.length; i++) {
                 const typedValue = TypeInferrer.infer(rawTokens[i], tokenInfo[i]);
                 values.push(typedValue);
             }
+
+            const keep = Parser._stripInlineComment(rawTokens, tokenInfo);
+            rawTokens = rawTokens.slice(0, keep);
+            values = values.slice(0, keep);
+            Parser._checkExtraTokens(rawTokens, fields.length, this.lineNum + 1);
 
             // Build row dictionary
             const row = {};
@@ -566,6 +571,36 @@
             }
 
             return row;
+        }
+
+        /**
+         * Return the number of leading tokens that are data: an unquoted
+         * token starting with '#' begins an inline comment, ignoring it and
+         * everything after it. Quoted tokens are always data.
+         */
+        static _stripInlineComment(rawTokens, quotedFlags) {
+            for (let i = 0; i < rawTokens.length; i++) {
+                if (!quotedFlags[i] && rawTokens[i].startsWith('#')) {
+                    return i;
+                }
+            }
+            return rawTokens.length;
+        }
+
+        /**
+         * Reject rows with more values than fields instead of silently
+         * truncating them.
+         */
+        static _checkExtraTokens(rawTokens, fieldCount, lineNum) {
+            if (rawTokens.length <= fieldCount) {
+                return;
+            }
+            throw new ISONSyntaxError(
+                `Row has ${rawTokens.length} values but only ${fieldCount} ` +
+                `fields (extra value: ${JSON.stringify(rawTokens[fieldCount])})`,
+                lineNum,
+                0
+            );
         }
 
         _setNestedValue(obj, path, value) {
@@ -723,16 +758,24 @@
                 return '""';
             }
 
+            // '\r' and '\\' would be emitted raw and corrupt on re-parse; a
+            // leading '#' would turn the line into a comment (or an inline
+            // comment) and silently lose data. A bare value matching
+            // 'kind.name' would be mistaken for a block header on re-parse.
             const needsQuote = (
                 s.includes(' ') ||
                 s.includes('\t') ||
                 s.includes('"') ||
                 s.includes('\n') ||
+                s.includes('\r') ||
+                s.includes('\\') ||
+                s.startsWith('#') ||
                 s === 'true' ||
                 s === 'false' ||
                 s === 'null' ||
                 s.startsWith(':') ||
-                Serializer._looksLikeNumber(s)
+                Serializer._looksLikeNumber(s) ||
+                Serializer._looksLikeBlockHeader(s)
             );
 
             if (needsQuote) {
@@ -749,6 +792,17 @@
 
         static _looksLikeNumber(s) {
             return !isNaN(parseFloat(s)) && isFinite(s);
+        }
+
+        // Mirrors Parser._looksLikeHeader: a lone token of this shape at the
+        // start of a row would be parsed as a new block header
+        static _looksLikeBlockHeader(s) {
+            const parts = s.split('.');
+            if (parts.length !== 2) {
+                return false;
+            }
+            const idPattern = /^[a-zA-Z_][a-zA-Z0-9_-]*$/;
+            return idPattern.test(parts[0]) && idPattern.test(parts[1]);
         }
     }
 
@@ -1106,14 +1160,19 @@
 
             // Parse values
             const valuesTokenizer = new Tokenizer(valuesStr, lineNum);
-            const rawValues = valuesTokenizer.tokenize();
+            let rawValues = valuesTokenizer.tokenize();
             const tokenInfo = valuesTokenizer.getTokenInfo();
 
             // Infer types for values
-            const typedValues = [];
+            let typedValues = [];
             for (let i = 0; i < rawValues.length; i++) {
                 typedValues.push(TypeInferrer.infer(rawValues[i], tokenInfo[i]));
             }
+
+            const keep = Parser._stripInlineComment(rawValues, tokenInfo);
+            rawValues = rawValues.slice(0, keep);
+            typedValues = typedValues.slice(0, keep);
+            Parser._checkExtraTokens(rawValues, fields.length, lineNum);
 
             // Zip fields and values
             const valuesDict = {};
@@ -1339,6 +1398,7 @@
                 s.includes('\r') ||
                 s.includes('\\') ||
                 s.includes('|') ||
+                s.startsWith('#') ||
                 s === 'true' ||
                 s === 'false' ||
                 s === 'null' ||

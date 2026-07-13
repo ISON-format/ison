@@ -4,6 +4,9 @@
  * Zod-like validation and type-safe models for ISON format.
  * Provides schema definition, validation, and LLM output parsing.
  *
+ * ISON text parsing is delegated to the core `ison-ts` package;
+ * this package validates the parsed values against your schemas.
+ *
  * @example
  * ```typescript
  * import { i, parse } from 'isonantic-ts';
@@ -15,11 +18,24 @@
  *   active: i.boolean().default(true),
  * });
  *
+ * const isonText = [
+ *   'table.users',
+ *   'id name email active',
+ *   '1 Alice alice@example.com true',
+ * ].join('\n');
+ *
  * const users = parse(isonText, UserSchema);
+ * // => [{ id: 1, name: 'Alice', email: 'alice@example.com', active: true }]
  * ```
  */
 
-export const VERSION = "1.0.0";
+import {
+  loads as isonLoads,
+  Reference as IsonTextReference,
+  ISONSyntaxError,
+} from "ison-ts";
+
+export const VERSION = "1.1.0";
 
 // =============================================================================
 // Types
@@ -809,6 +825,103 @@ export function generatePrompt<T extends ObjectShape>(
   lines.push("```");
 
   return lines.join("\n");
+}
+
+// =============================================================================
+// ISON Text Parsing (delegates to the core ison-ts parser)
+// =============================================================================
+
+/**
+ * Convert an ison-ts value into the value shape isonantic-ts validates.
+ * ison-ts represents references as `Reference` class instances; isonantic-ts
+ * uses plain `ISONReference` objects (`{ id, type? }`).
+ */
+function fromIsonValue(value: unknown): ISONValue {
+  if (value instanceof IsonTextReference) {
+    const ref: ISONReference = { id: value.id };
+    if (value.type !== undefined) {
+      ref.type = value.type;
+    }
+    return ref;
+  }
+  return value as ISONValue;
+}
+
+function fromIsonRow(row: Record<string, unknown>): Record<string, ISONValue> {
+  const mapped: Record<string, ISONValue> = {};
+  for (const [key, value] of Object.entries(row)) {
+    mapped[key] = fromIsonValue(value);
+  }
+  return mapped;
+}
+
+/**
+ * Parse ISON text and validate a block against a table schema.
+ *
+ * Parsing is delegated to the core `ison-ts` package (`loads`). The block is
+ * located by the schema's block name, matching either the bare block name
+ * (`users`) or the full `kind.name` header (`table.users`). Each row is then
+ * validated through the schema and returned fully typed.
+ *
+ * @param isonText - Raw ISON text (e.g. LLM output)
+ * @param schema - A table schema created with `i.table(name, shape)`
+ * @returns The validated, typed rows of the matching block
+ * @throws {ValidationError} If no block matches the schema's block name, or
+ *   if any row fails validation (with per-field errors).
+ * @throws {ISONSyntaxError} If the ISON text itself is malformed
+ *   (propagated from `ison-ts`).
+ */
+export function parse<T extends ObjectShape>(
+  isonText: string,
+  schema: TableSchema<T>
+): InferObject<T>[] {
+  const doc = isonLoads(isonText);
+
+  const block = doc.blocks.find(
+    (b) => b.name === schema.blockName || `${b.kind}.${b.name}` === schema.blockName
+  );
+
+  if (!block) {
+    const available = doc.blocks.map((b) => `${b.kind}.${b.name}`).join(", ");
+    throw new ValidationError([
+      {
+        field: schema.blockName,
+        message: `Block '${schema.blockName}' not found in ISON document` +
+          (available ? ` (available: ${available})` : ""),
+      },
+    ]);
+  }
+
+  return schema.parse(block.rows.map(fromIsonRow));
+}
+
+/**
+ * Safe variant of {@link parse} that never throws for invalid input.
+ *
+ * Follows the package's `safeParse` result convention. ISON syntax errors
+ * from `ison-ts` are reported as a `ValidationError` result as well.
+ */
+export function parseSafe<T extends ObjectShape>(
+  isonText: string,
+  schema: TableSchema<T>
+): { success: true; data: InferObject<T>[] } | { success: false; error: ValidationError } {
+  try {
+    return { success: true, data: parse(isonText, schema) };
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      return { success: false, error: e };
+    }
+    if (e instanceof ISONSyntaxError) {
+      return {
+        success: false,
+        error: new ValidationError(
+          [{ field: "", message: e.message }],
+          `Invalid ISON: ${e.message}`
+        ),
+      };
+    }
+    throw e;
+  }
 }
 
 // =============================================================================
