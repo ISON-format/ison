@@ -143,7 +143,7 @@ jobs:
           fi
         env:
           TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
 
   publish-rust-base:
     name: Publish Crates.io Base (ison-rust)
@@ -226,7 +226,7 @@ jobs:
           fi
         env:
           TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
 
   publish-rust-dependent:
     name: Publish Crates.io Dependent (isonantic-rust)
