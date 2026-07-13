@@ -92,6 +92,38 @@ jobs:
           pip install -e ".[dev]"
           pytest tests/ -v --tb=short
 
+      - name: Test ison-cli
+        working-directory: ison-cli
+        run: |
+          pip install -e ".[dev]"
+          pytest tests/ -v --tb=short
+
+  # ===========================================
+  # Go Tests
+  # ===========================================
+  test-go:
+    name: Test Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Test ison-go
+        working-directory: ison-go
+        run: |
+          go vet ./...
+          go test ./... -count=1
+
+      - name: Test isonantic-go
+        working-directory: isonantic-go
+        run: |
+          go vet ./...
+          go test ./... -count=1
+
   # ===========================================
   # Rust Tests
   # ===========================================
