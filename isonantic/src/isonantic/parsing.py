@@ -10,6 +10,8 @@ from typing import (
     Any, Dict, Generic, List, Optional, Type, TypeVar, Union
 )
 
+import ison_parser
+
 from .models import ISONModel, TableModel
 from .fields import Reference
 from .exceptions import ValidationError, LLMParseError
@@ -197,6 +199,29 @@ def parse_llm_output(
             suggestion="Check that all required fields are present and properly formatted",
             recoverable=True,
         )
+    except ison_parser.ISONSyntaxError as e:
+        # LLM chatter (e.g. trailing prose) can survive extraction; drop the
+        # lines the core parser rejects and retry before giving up
+        if auto_fix:
+            cleaned = _drop_unparseable_lines(ison_data)
+            if cleaned is not None:
+                try:
+                    return parse_ison(cleaned, model, strict=strict)
+                except ValidationError as e2:
+                    raise LLMParseError(
+                        f"Validation failed: {e2}",
+                        raw_output=response,
+                        extracted_ison=cleaned,
+                        suggestion="Check that all required fields are present and properly formatted",
+                        recoverable=True,
+                    )
+                except Exception:
+                    pass
+        raise LLMParseError(
+            f"Parse error: {e}",
+            raw_output=response,
+            extracted_ison=ison_data,
+        )
     except Exception as e:
         raise LLMParseError(
             f"Parse error: {e}",
@@ -245,167 +270,48 @@ def validate_llm_ison(
 def _parse_ison_to_blocks(data: str) -> List[Dict[str, Any]]:
     """
     Parse raw ISON string to block dictionaries.
-    
+
+    Delegates format parsing to the core `ison_parser` package (the single
+    source of truth for ISON syntax, escaping, and type inference); this
+    layer only adapts the parsed Document to isonantic's block-dict shape
+    and maps core References to isonantic References.
+
     Returns list of blocks with:
-    - kind: "table", "object", or "meta"
+    - kind: block kind (e.g. "table", "object", "meta")
     - name: block name
     - fields: list of field names
-    - rows: list of row dictionaries
+    - rows: list of row dictionaries (dot-path fields nested)
     """
+    if not data or not data.strip():
+        return []
+
+    doc = ison_parser.loads(data)
+
     blocks = []
-    lines = data.strip().split("\n")
-    
-    current_block = None
-    
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        
-        # Skip empty lines and comments
-        if not line or line.startswith("#"):
-            i += 1
-            continue
-        
-        # Check for block header
-        if "." in line and not line.startswith('"'):
-            parts = line.split(".", 1)
-            if parts[0] in ("table", "object", "meta"):
-                # Save previous block
-                if current_block:
-                    blocks.append(current_block)
-                
-                # Start new block
-                current_block = {
-                    "kind": parts[0],
-                    "name": parts[1],
-                    "fields": [],
-                    "rows": [],
-                }
-                i += 1
-                
-                # Next line should be fields
-                if i < len(lines):
-                    field_line = lines[i].strip()
-                    if field_line and not field_line.startswith("#"):
-                        current_block["fields"] = _tokenize_line(field_line)
-                        i += 1
-                
-                continue
-        
-        # Data row
-        if current_block and current_block["fields"]:
-            tokens = _tokenize_line(line)
-            
-            if len(tokens) == len(current_block["fields"]):
-                row = {}
-                for j, field in enumerate(current_block["fields"]):
-                    value = _infer_type(tokens[j])
-                    _set_nested_value(row, field, value)
-                
-                current_block["rows"].append(row)
-        
-        i += 1
-    
-    # Save last block
-    if current_block:
-        blocks.append(current_block)
-    
+    for block in doc.blocks:
+        rows = [
+            {key: _from_core_value(value) for key, value in row.items()}
+            for row in block.rows
+        ]
+        blocks.append({
+            "kind": block.kind,
+            "name": block.name,
+            "fields": list(block.fields),
+            "rows": rows,
+        })
+
     return blocks
 
 
-def _tokenize_line(line: str) -> List[str]:
-    """Tokenize a line handling quoted strings"""
-    tokens = []
-    pos = 0
-    
-    while pos < len(line):
-        # Skip whitespace
-        while pos < len(line) and line[pos] in " \t":
-            pos += 1
-        
-        if pos >= len(line):
-            break
-        
-        if line[pos] == '"':
-            # Quoted string
-            pos += 1
-            start = pos
-            result = []
-            
-            while pos < len(line):
-                if line[pos] == "\\":
-                    pos += 1
-                    if pos < len(line):
-                        escape_map = {
-                            '"': '"',
-                            '\\': '\\',
-                            'n': '\n',
-                            't': '\t',
-                            'r': '\r',
-                        }
-                        result.append(escape_map.get(line[pos], line[pos]))
-                        pos += 1
-                elif line[pos] == '"':
-                    pos += 1
-                    break
-                else:
-                    result.append(line[pos])
-                    pos += 1
-            
-            tokens.append("".join(result))
-        else:
-            # Unquoted token
-            start = pos
-            while pos < len(line) and line[pos] not in " \t":
-                pos += 1
-            tokens.append(line[start:pos])
-    
-    return tokens
-
-
-def _infer_type(token: str) -> Any:
-    """Infer type from token"""
-    # Boolean
-    if token == "true":
-        return True
-    if token == "false":
-        return False
-    
-    # Null
-    if token == "null":
-        return None
-    
-    # Integer
-    if re.match(r"^-?[0-9]+$", token):
-        return int(token)
-    
-    # Float
-    if re.match(r"^-?[0-9]+\.[0-9]+$", token):
-        return float(token)
-    
-    # Reference
-    if token.startswith(":"):
-        value = token[1:]
-        if ":" in value:
-            parts = value.split(":", 1)
-            return Reference(id=parts[1], ref_type=parts[0])
-        return Reference(id=value)
-    
-    # String
-    return token
-
-
-def _set_nested_value(obj: dict, path: str, value: Any):
-    """Set value in nested dict using dot-path"""
-    parts = path.split(".")
-    current = obj
-    
-    for i, part in enumerate(parts[:-1]):
-        if part not in current:
-            current[part] = {}
-        current = current[part]
-    
-    current[parts[-1]] = value
+def _from_core_value(value: Any) -> Any:
+    """Map a core ison_parser value to isonantic's types"""
+    if isinstance(value, ison_parser.Reference):
+        return Reference(id=value.id, ref_type=value.type)
+    if isinstance(value, dict):
+        return {k: _from_core_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_from_core_value(v) for v in value]
+    return value
 
 
 def _extract_ison(response: str) -> Optional[str]:
@@ -452,6 +358,30 @@ def _extract_ison(response: str) -> Optional[str]:
     if ison_lines:
         return "\n".join(ison_lines).strip()
     
+    return None
+
+
+def _drop_unparseable_lines(ison_data: str, max_drops: int = 20) -> Optional[str]:
+    """
+    Recovery pass: iteratively drop lines the core parser rejects.
+
+    LLM responses can leave prose interleaved with the extracted ISON. The
+    core parser stays the sole syntax authority — we never re-implement
+    leniency, we just remove the exact lines it points at and retry.
+
+    Returns the cleaned ISON string, or None if it cannot be salvaged.
+    """
+    lines = ison_data.split("\n")
+    for _ in range(max_drops):
+        try:
+            ison_parser.loads("\n".join(lines))
+            return "\n".join(lines)
+        except ison_parser.ISONSyntaxError as e:
+            if not e.line or not (1 <= e.line <= len(lines)):
+                return None
+            del lines[e.line - 1]
+        except Exception:
+            return None
     return None
 
 

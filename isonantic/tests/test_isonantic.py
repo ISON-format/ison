@@ -639,6 +639,67 @@ class TestEdgeCases:
 
 
 # =============================================================================
+# Core Parser Delegation
+# =============================================================================
+
+class TestCoreParserDelegation:
+    """
+    Pin the contract that isonantic delegates ISON syntax to the core
+    ison_parser package instead of carrying its own duplicate parser.
+    """
+
+    def test_quoted_tokens_stay_strings(self):
+        """Quoted numerics/keywords must not be re-inferred into other types"""
+        from isonantic.parsing import _parse_ison_to_blocks
+
+        blocks = _parse_ison_to_blocks('table.teams\nid name budget\n1 "123" 100.0')
+        assert blocks[0]["rows"][0]["name"] == "123"
+        assert isinstance(blocks[0]["rows"][0]["name"], str)
+
+        blocks = _parse_ison_to_blocks('table.teams\nid name budget\n2 "true" 1.0')
+        assert blocks[0]["rows"][0]["name"] == "true"
+        assert isinstance(blocks[0]["rows"][0]["name"], str)
+
+    def test_core_reference_mapped_to_isonantic_reference(self):
+        from isonantic.parsing import _parse_ison_to_blocks
+
+        blocks = _parse_ison_to_blocks('table.users\nid team\n1 :team:7')
+        ref = blocks[0]["rows"][0]["team"]
+        assert isinstance(ref, Reference)
+        assert ref.id == "7"
+        assert ref.ref_type == "team"
+
+    def test_short_rows_padded_not_silently_dropped(self):
+        """
+        The old embedded parser silently dropped rows whose token count
+        didn't match the fields; delegation surfaces them as validation
+        errors on the missing required fields instead.
+        """
+        ison = "table.teams\nid name budget\n1"
+        with pytest.raises(ValidationError):
+            parse_ison(ison, Team)
+
+    def test_syntax_errors_surface_from_core(self):
+        import ison_parser
+
+        with pytest.raises(ison_parser.ISONSyntaxError):
+            parse_ison('table.teams\nid name budget\n1 "unterminated', Team)
+
+    def test_drop_unparseable_lines_recovery(self):
+        """LLM chatter lines the core parser rejects are dropped and retried"""
+        from isonantic.parsing import _drop_unparseable_lines
+
+        chatty = 'table.teams\nid name budget\n1 "A" 10.0\n\nHope this helps!'
+        cleaned = _drop_unparseable_lines(chatty)
+        assert cleaned is not None
+        assert "Hope this helps!" not in cleaned
+
+        teams = parse_ison(cleaned, Team)
+        assert len(teams) == 1
+        assert teams[0].name == "A"
+
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 
