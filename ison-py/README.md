@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/maheshvaikri-code/ison/main/images/ison_logo_git.png" alt="ISON Logo">
+  <img src="https://raw.githubusercontent.com/ISON-format/ison/main/images/ison_logo_git.png" alt="ISON Logo">
 </p>
 
 # ison-py
@@ -17,6 +17,7 @@
 - **ISONL streaming format** for fine-tuning datasets and event streams
 - **Native references** for relational data (`:`-prefixed IDs)
 - **Type inference** for clean, minimal syntax
+- **Built-in validation** - Pydantic-like models and schema validation
 - **Zero dependencies** - pure Python implementation
 
 ## Installation
@@ -399,6 +400,50 @@ response = client.messages.create(
 doc = tools.parse_response(response)
 ```
 
+## Built-in Validation (Pydantic-like)
+
+ison-py includes a built-in validation subpackage with Pydantic-like models:
+
+```python
+from ison_parser.validation import TableModel, Field, Reference, parse_ison
+
+class Team(TableModel):
+    __ison_block__ = "table.teams"
+    id: int = Field(primary_key=True)
+    name: str
+    budget: float
+
+class User(TableModel):
+    __ison_block__ = "table.users"
+    id: int = Field(primary_key=True)
+    name: str
+    email: str
+    team: Reference[Team]  # Reference to Team by ID
+
+# Parse with validation
+ison_data = """
+table.teams
+id name budget
+1 Engineering 500000
+
+table.users
+id name email team
+1 Alice alice@example.com :1
+"""
+
+users = parse_ison(ison_data, User)
+```
+
+Features:
+- **Type-safe models** with automatic validation
+- **Field constraints** (`ge`, `le`, `min_length`, `max_length`, `pattern`)
+- **References** that auto-resolve across blocks
+- **Custom validators** with `@validator` and `@root_validator` decorators
+- **Computed fields** with `@computed` decorator
+- **LLM output parsing** with error recovery
+
+> **Note:** The standalone `isonantic` package is deprecated. Use `ison_parser.validation` instead.
+
 ## Use Cases
 
 - **LLM Fine-tuning datasets** - 30-70% smaller training files
@@ -463,7 +508,7 @@ pytest tests/
 - [Documentation](https://www.ison.dev) | [www.getison.com](https://www.getison.com)
 - [Specification](https://www.ison.dev/spec.html)
 - [ISONL Spec](https://www.ison.dev/isonl.html)
-- [GitHub](https://github.com/maheshvaikri-code/ison)
+- [GitHub](https://github.com/ISON-format/ison)
 
 ## License
 

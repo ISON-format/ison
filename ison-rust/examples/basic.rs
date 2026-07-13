@@ -109,7 +109,7 @@ id type_ref namespace_ref simple_ref
 
     // Example 5: ISONL format
     println!("\n5. ISONL Streaming Format:");
-    let isonl = dumps_isonl(&doc);
+    let isonl = dumps_isonl(&doc).expect("Failed to serialize to ISONL");
     println!("ISONL output (one record per line):");
     for line in isonl.lines().take(3) {
         println!("  {}", line);

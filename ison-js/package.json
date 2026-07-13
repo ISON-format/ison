@@ -1,6 +1,6 @@
 {
   "name": "ison-parser",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "ISON (Interchange Simple Object Notation) - A token-efficient data format for AI/LLM workflows",
   "main": "dist/ison-parser.js",
   "module": "dist/ison-parser.esm.js",
@@ -10,6 +10,11 @@
       "require": "./dist/ison-parser.js",
       "import": "./dist/ison-parser.esm.js",
       "types": "./dist/ison-parser.d.ts"
+    },
+    "./validation": {
+      "require": "./dist/validation.js",
+      "import": "./dist/validation.esm.js",
+      "types": "./dist/validation.d.ts"
     }
   },
   "files": [
@@ -19,15 +24,16 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "npm run build:cjs && npm run build:esm",
+    "build": "npm run build:cjs && npm run build:esm && npm run build:validation",
     "build:cjs": "node -e \"require('fs').copyFileSync('src/ison-parser.js', 'dist/ison-parser.js')\"",
     "build:esm": "node scripts/build-esm.js",
-    "test": "node test/test_ison_parser.js",
+    "build:validation": "node scripts/build-validation.js",
+    "test": "node test/test_ison_parser.js && node test/test_validation.js",
     "prepublishOnly": "npm run build && npm test"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/maheshvaikri-code/ison.git"
+    "url": "git+https://github.com/ISON-format/ison.git"
   },
   "keywords": [
     "ison",
@@ -46,7 +52,7 @@
   "author": "Mahesh Vaikri",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/maheshvaikri-code/ison/issues"
+    "url": "https://github.com/ISON-format/ison/issues"
   },
   "homepage": "https://www.ison.dev",
   "devDependencies": {},

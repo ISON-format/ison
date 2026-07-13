@@ -80,3 +80,13 @@ Makefile
 # Jupyter
 .ipynb_checkpoints/
 PAPA.md
+
+# Sample/test files in root (for development only)
+/sample*.ison
+/sample*.json
+/social.ison
+/test.ison
+/sampleX.ison
+
+# VS Code extension builds (keep only source)
+ison-vscode/*.vsix

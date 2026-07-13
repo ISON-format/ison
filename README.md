@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/maheshvaikri-code/ison/releases"><img src="https://img.shields.io/badge/version-1.0.1-blue.svg" alt="Version 1.0.1"></a>
+  <a href="https://github.com/ISON-format/ison/releases"><img src="https://img.shields.io/badge/version-1.0.2-blue.svg" alt="Version 1.0.2"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://www.npmjs.com/package/ison-parser"><img src="https://img.shields.io/npm/v/ison-parser.svg" alt="NPM"></a>
   <a href="https://pypi.org/project/ison-py"><img src="https://img.shields.io/pypi/v/ison-py.svg" alt="PyPI"></a>
@@ -84,21 +84,18 @@ JSON (87 tokens)                    ISON (34 tokens)
 **JavaScript/TypeScript:**
 ```bash
 npm install ison-parser    # JavaScript
-npm install ison-ts        # TypeScript with full types
-npm install isonantic-ts   # Validation & schemas
+npm install ison-ts        # TypeScript with full types (includes validation)
 ```
 
 **Python:**
 ```bash
-pip install ison-py        # Parser
-pip install isonantic      # Validation & schemas
+pip install ison-py        # Parser (includes validation subpackage)
 ```
 
 **Rust:**
 ```toml
 [dependencies]
 ison-rs = "1.0"
-isonantic-rs = "1.0"       # Validation & schemas
 ```
 
 **C++ (Header-only):**
@@ -109,8 +106,7 @@ cp ison-cpp/include/ison_parser.hpp /your/project/
 
 **Go:**
 ```bash
-go get github.com/maheshvaikri-code/ison/ison-go
-go get github.com/maheshvaikri-code/ison/isonantic-go
+go get github.com/ISON-format/ison/ison-go  # Includes validation subpackage
 ```
 
 ### Usage Examples
@@ -187,7 +183,7 @@ for (const auto& row : doc["users"].rows) {
 
 **Go:**
 ```go
-import "github.com/maheshvaikri-code/ison/ison-go"
+import "github.com/ISON-format/ison/ison-go"
 
 doc, _ := ison.Parse(`
 table.users
@@ -241,16 +237,28 @@ table.users|id name email|2 Bob bob@example.com
 
 ## Packages
 
-| Ecosystem | Parser | Validation | Status |
-|-----------|--------|------------|--------|
-| **NPM** | [ison-parser](https://www.npmjs.com/package/ison-parser) | [isonantic-ts](https://www.npmjs.com/package/isonantic-ts) | 33 + 46 tests |
-| **NPM** | [ison-ts](https://www.npmjs.com/package/ison-ts) | - | 23 tests |
-| **PyPI** | [ison-py](https://pypi.org/project/ison-py) | [isonantic](https://pypi.org/project/isonantic) | 31 + 39 tests |
-| **Crates.io** | [ison-rs](https://crates.io/crates/ison-rs) | [isonantic-rs](https://crates.io/crates/isonantic-rs) | 9 + 1 tests |
-| **C++** | ison-cpp | isonantic-cpp | 30 tests |
-| **Go** | ison-go | isonantic-go | 28 + 55 tests |
+### Parser Libraries
 
-**Total: 11 packages across 5 ecosystems, 303+ tests passing**
+| Ecosystem | Package | Validation | Tests |
+|-----------|---------|------------|-------|
+| **NPM** | [ison-parser](https://www.npmjs.com/package/ison-parser) | Built-in (`ison-parser/validation`) | 80 |
+| **NPM** | [ison-ts](https://www.npmjs.com/package/ison-ts) | Built-in (`ison-ts/validation`) | 23 |
+| **PyPI** | [ison-py](https://pypi.org/project/ison-py) | Built-in (`ison_parser.validation`) | 212+ |
+| **Crates.io** | [ison-rs](https://crates.io/crates/ison-rs) | [isonantic-rs](https://crates.io/crates/isonantic-rs) | 10 |
+| **C++** | ison-cpp | isonantic-cpp | 30 |
+| **Go** | [ison-go](https://pkg.go.dev/github.com/ISON-format/ison/ison-go) | Built-in (`ison-go/validation`) | 40+ |
+
+### Tools & Integrations
+
+| Ecosystem | Package | Description |
+|-----------|---------|-------------|
+| **PyPI** | [ison-cli](https://pypi.org/project/ison-cli) | Command-line converter & validator |
+| **VS Code** | [ison-lang](https://marketplace.visualstudio.com/items?itemName=ison-dev.ison-lang) | Syntax highlighting & snippets |
+| **NPM** | [n8n-nodes-ison](https://www.npmjs.com/package/n8n-nodes-ison) | n8n workflow automation node |
+
+**Total: 395+ tests passing across 5 ecosystems**
+
+> **Note:** Validation is integrated into parser packages for JavaScript, TypeScript, Python, and Go. For Rust and C++, validation remains in separate packages.
 
 ---
 
@@ -269,34 +277,49 @@ table.users|id name email|2 Bob bob@example.com
 
 ---
 
-## Schema Validation (ISONantic)
+## Schema Validation (Built-in)
 
-Type-safe validation with fluent API:
+Type-safe validation is now built into the parser packages with a fluent API:
 
-```javascript
-// JavaScript/TypeScript
-import { table, string, int, boolean } from 'isonantic-ts';
+```typescript
+// TypeScript (ison-ts)
+import { validation } from 'ison-ts';
+const { i, document } = validation;
 
-const userSchema = table('users')
-  .field('id', int().required())
-  .field('name', string().min(1).max(100))
-  .field('email', string().email())
-  .field('active', boolean().default(true));
+const UserSchema = i.table('users', {
+  id: i.int(),
+  name: i.string().min(1).max(100),
+  email: i.string().email(),
+  active: i.boolean().default(true),
+});
 
-const users = userSchema.validate(doc);
+const doc = UserSchema.parse(data);
 ```
 
 ```python
-# Python
-from isonantic import table, string, int_, boolean
+# Python (ison-py)
+from ison_parser.validation import TableModel, Field
 
-user_schema = (table('users')
-    .field('id', int_().required())
-    .field('name', string().min(1).max(100))
-    .field('email', string().email())
-    .field('active', boolean().default(True)))
+class User(TableModel):
+    __ison_block__ = "table.users"
+    id: int = Field(primary_key=True)
+    name: str
+    email: str
+    active: bool = True
 
-users = user_schema.validate(doc)
+users = parse_ison(ison_data, User)
+```
+
+```go
+// Go (ison-go)
+import "github.com/ISON-format/ison/ison-go/validation"
+
+userSchema := validation.I.Table("users", map[string]validation.Schema{
+    "id":     validation.I.Int(),
+    "name":   validation.I.String().Min(1).Max(100),
+    "email":  validation.I.String().Email(),
+    "active": validation.I.Bool().Default(true),
+})
 ```
 
 ---
@@ -315,21 +338,28 @@ users = user_schema.validate(doc)
 ```
 ison/
 ├── ison-js/               # JavaScript parser (NPM: ison-parser)
-├── ison-ts/               # TypeScript parser (NPM: ison-ts)
-├── isonantic-ts/          # TypeScript validation (NPM: isonantic-ts)
-├── ison-py/               # Python parser (PyPI: ison-py)
-├── isonantic/             # Python validation (PyPI: isonantic)
+│   └── src/validation.js  # Built-in validation module
+├── ison-ts/               # TypeScript parser + validation (NPM: ison-ts)
+│   └── src/validation.ts  # Built-in validation module
+├── ison-py/               # Python parser + validation (PyPI: ison-py)
+│   └── validation/        # Built-in validation subpackage
 ├── ison-rust/             # Rust parser (Crates.io: ison-rs)
-├── isonantic-rust/        # Rust validation (Crates.io: isonantic-rs)
 ├── ison-cpp/              # C++ header-only parser
-├── isonantic-cpp/         # C++ header-only validation
-├── ison-go/               # Go parser
-├── isonantic-go/          # Go validation
+├── ison-go/               # Go parser + validation
+│   └── validation/        # Built-in validation subpackage
+├── ison-cli/              # CLI tool (PyPI: ison-cli)
+├── ison-vscode/           # VS Code extension (Marketplace: ison-lang)
+├── n8n-nodes-ison/        # n8n community node
+├── isonantic-rust/        # Rust validation (Crates.io: isonantic-rs)
+├── isonantic-cpp/         # C++ validation header
 ├── benchmark/             # Token efficiency benchmarks
 ├── images/                # Logo and assets
+├── AGENTS.md              # AI coding agent guidelines
 ├── LICENSE                # MIT License
 └── README.md              # This file
 ```
+
+> **Note:** Standalone `isonantic-ts`, `isonantic` (Python), and `isonantic-go` packages are deprecated. Validation is now integrated into the parser packages. Rust and C++ validation remain as separate packages.
 
 ---
 
@@ -337,28 +367,26 @@ ison/
 
 ```bash
 # Clone the repository
-git clone https://github.com/maheshvaikri-code/ison.git
+git clone https://github.com/ISON-format/ison.git
 cd ison
 
-# JavaScript/TypeScript
+# JavaScript
 cd ison-js && npm install && npm test
-cd ison-ts && npm install && npm test
-cd isonantic-ts && npm install && npm test
 
-# Python
+# TypeScript (includes validation)
+cd ison-ts && npm install && npm test
+
+# Python (includes validation)
 cd ison-py && pip install -e . && pytest
-cd isonantic && pip install -e . && pytest
 
 # Rust
 cd ison-rust && cargo test
-cd isonantic-rust && cargo test
 
 # C++
 cd ison-cpp && mkdir build && cd build && cmake .. && cmake --build . && ctest
 
-# Go
+# Go (includes validation)
 cd ison-go && go test -v ./...
-cd isonantic-go && go test -v ./...
 ```
 
 ---
@@ -366,9 +394,9 @@ cd isonantic-go && go test -v ./...
 ## Test Results
 
 <details>
-<summary><strong>Click to expand test results (303+ tests passing)</strong></summary>
+<summary><strong>Click to expand test results (395+ tests passing)</strong></summary>
 
-### JavaScript (ison-parser) - 33 tests
+### JavaScript (ison-parser) - 80 tests
 ```
 ✓ parses basic table correctly
 ✓ handles quoted strings
@@ -377,8 +405,12 @@ cd isonantic-go && go test -v ./...
 ✓ parses multiple tables
 ✓ converts to JSON correctly
 ✓ handles null values
-✓ handles empty values in rows
 ✓ handles ISONL format
+# Built-in validation tests (47 tests)
+✓ string/number/boolean schemas
+✓ object/array/table schemas
+✓ custom refinements
+... and more
 ```
 
 ### TypeScript (ison-ts) - 23 tests
@@ -390,43 +422,22 @@ cd isonantic-go && go test -v ./...
 ✓ should parse multiple tables
 ✓ should convert to JSON
 ✓ should handle null values
-✓ should handle empty values
 ✓ should parse ISONL format
 ```
 
-### TypeScript Validation (isonantic-ts) - 46 tests
-```
-✓ validates required string fields
-✓ validates optional string fields
-✓ validates string min/max length
-✓ validates email format
-✓ validates int/float/bool fields
-✓ validates references
-✓ validates table schemas
-... and 39 more tests
-```
-
-### Python (ison-py) - 31 tests
+### Python (ison-py) - 212+ tests
 ```
 ✓ test_parse_basic_table
 ✓ test_parse_quoted_strings
 ✓ test_parse_type_annotations
 ✓ test_parse_references
-✓ test_parse_multiple_tables
-✓ test_to_json
-✓ test_dumps / test_dumps_isonl
-... and 24 more tests
-```
-
-### Python Validation (isonantic) - 39 tests
-```
-✓ test_string_field_required
-✓ test_string_min_length
-✓ test_email_validation
-✓ test_int_field / test_float_field
-✓ test_reference_field
-✓ test_table_schema
-... and 33 more tests
+✓ test_to_json / test_from_dict
+✓ test_isonl_basic_parsing
+# Built-in validation tests:
+✓ test_model_validation
+✓ test_field_constraints
+✓ test_reference_resolution
+... and 200+ more tests
 ```
 
 ### Rust (ison-rs) - 9 tests
@@ -456,7 +467,7 @@ cd isonantic-go && go test -v ./...
 ... and 15 more tests
 ```
 
-### Go (ison-go) - 28 tests
+### Go (ison-go) - 40+ tests
 ```
 ✓ TestParseSimpleTable
 ✓ TestParseTypedFields
@@ -468,21 +479,8 @@ cd isonantic-go && go test -v ./...
 ✓ TestDumps / TestRoundtrip
 ✓ TestDumpsISONL / TestParseISONL
 ✓ TestToJSON / TestFromJSON
-... and 18 more tests
-```
-
-### Go Validation (isonantic-go) - 55 tests
-```
-✓ TestStringRequired / TestStringOptional
-✓ TestStringMinLength / TestStringMaxLength
-✓ TestStringEmail / TestStringURL
-✓ TestNumberMin / TestNumberPositive
-✓ TestIntSchema / TestBooleanRequired
-✓ TestRefRequired / TestRefNamespace
-✓ TestObjectFieldValidation
-✓ TestTableRowValidation
-✓ TestDocumentParse / TestDocumentSafeParse
-... and 46 more tests
+# Built-in validation available in validation subpackage
+... and more tests
 ```
 
 </details>

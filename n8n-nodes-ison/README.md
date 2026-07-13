@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/maheshvaikri-code/ison/main/images/ison_logo_white_bg.png" alt="ISON Logo" width="300">
+  <img src="https://raw.githubusercontent.com/ISON-format/ison/main/images/ison_logo_white_bg.png" alt="ISON Logo" width="300">
 </p>
 
 # n8n-nodes-ison
@@ -179,7 +179,7 @@ ISON achieves this by:
 - [ISON Website](https://www.ison.dev)
 - [Documentation](https://www.getison.com)
 - [Playground](https://www.ison.dev/playground.html)
-- [GitHub](https://github.com/maheshvaikri-code/ison)
+- [GitHub](https://github.com/ISON-format/ison)
 
 ## License
 

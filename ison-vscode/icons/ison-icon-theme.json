@@ -1,0 +1,14 @@
+{
+  "iconDefinitions": {
+    "_ison": {
+      "iconPath": "../images/ison-file-icon.png"
+    },
+    "_isonl": {
+      "iconPath": "../images/ison-file-icon.png"
+    }
+  },
+  "fileExtensions": {
+    "ison": "_ison",
+    "isonl": "_isonl"
+  }
+}

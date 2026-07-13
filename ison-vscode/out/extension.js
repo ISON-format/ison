@@ -250,20 +250,161 @@ function parseValue(str) {
         return num;
     return str;
 }
-// JSON to ISON conversion
+// JSON to ISON conversion with recursive flattening
 function jsonToIson(json) {
     const data = JSON.parse(json);
+    const blocks = [];
+    let refCounter = 1;
+    // Helper: Check if value is a nested object (not array, not null)
+    const isNestedObject = (val) => {
+        return val !== null && typeof val === 'object' && !Array.isArray(val);
+    };
+    // Helper: Check if value is an array of objects
+    const isArrayOfObjects = (val) => {
+        return Array.isArray(val) && val.length > 0 && typeof val[0] === 'object' && val[0] !== null && !Array.isArray(val[0]);
+    };
+    // Helper: Check if value is an array of primitives
+    const isArrayOfPrimitives = (val) => {
+        return Array.isArray(val) && (val.length === 0 || typeof val[0] !== 'object');
+    };
+    // Helper: Check if value is an array of arrays
+    const isArrayOfArrays = (val) => {
+        return Array.isArray(val) && val.length > 0 && Array.isArray(val[0]);
+    };
+    // Helper: Add or update an extra block
+    const addToBlock = (blockName, blockKind, fields, row) => {
+        let existingBlock = blocks.find(b => b.name === blockName);
+        if (existingBlock) {
+            for (const k of fields) {
+                if (!existingBlock.fields.includes(k)) {
+                    existingBlock.fields.push(k);
+                }
+            }
+            existingBlock.rows.push(row);
+        }
+        else {
+            blocks.push({ kind: blockKind, name: blockName, fields: [...fields], rows: [row] });
+        }
+    };
+    // Helper: Recursively flatten nested structures
+    const flattenValue = (key, value, parentName, parentRef) => {
+        const nestedName = `${parentName}_${key}`;
+        if (isNestedObject(value)) {
+            const nestedRow = {};
+            nestedRow[`${parentName}_id`] = parentRef;
+            const nestedFields = [`${parentName}_id`];
+            for (const [nk, nv] of Object.entries(value)) {
+                if (isNestedObject(nv) || isArrayOfObjects(nv) || isArrayOfPrimitives(nv)) {
+                    flattenValue(nk, nv, nestedName, parentRef);
+                }
+                else {
+                    nestedRow[nk] = nv;
+                    nestedFields.push(nk);
+                }
+            }
+            if (Object.keys(nestedRow).length > 1) {
+                addToBlock(nestedName, 'table', nestedFields, nestedRow);
+            }
+        }
+        else if (isArrayOfObjects(value)) {
+            for (const item of value) {
+                const nestedRow = {};
+                nestedRow[`${parentName}_id`] = parentRef;
+                const nestedFields = [`${parentName}_id`];
+                for (const [nk, nv] of Object.entries(item)) {
+                    if (isNestedObject(nv) || isArrayOfObjects(nv) || isArrayOfPrimitives(nv)) {
+                        flattenValue(nk, nv, nestedName, parentRef);
+                    }
+                    else {
+                        nestedRow[nk] = nv;
+                        if (!nestedFields.includes(nk))
+                            nestedFields.push(nk);
+                    }
+                }
+                if (Object.keys(nestedRow).length > 1) {
+                    addToBlock(nestedName, 'table', nestedFields, nestedRow);
+                }
+            }
+        }
+        else if (isArrayOfPrimitives(value) && value.length > 0) {
+            for (const item of value) {
+                const nestedRow = {};
+                nestedRow[`${parentName}_id`] = parentRef;
+                nestedRow['value'] = item;
+                addToBlock(nestedName, 'table', [`${parentName}_id`, 'value'], nestedRow);
+            }
+        }
+    };
+    // Helper: Flatten a row
+    const flattenRow = (row, parentName, rowId) => {
+        const flatRow = {};
+        const parentRef = `:${rowId}`;
+        for (const [key, value] of Object.entries(row)) {
+            if (isNestedObject(value) || isArrayOfObjects(value) || isArrayOfPrimitives(value)) {
+                flattenValue(key, value, parentName, parentRef);
+            }
+            else if (value === null || value === undefined) {
+                flatRow[key] = null;
+            }
+            else {
+                flatRow[key] = value;
+            }
+        }
+        return flatRow;
+    };
+    // Process main data
+    for (const [name, content] of Object.entries(data)) {
+        if (Array.isArray(content)) {
+            if (isArrayOfArrays(content)) {
+                // Array of arrays - generate col1, col2, col3...
+                const maxCols = Math.max(...content.map((row) => Array.isArray(row) ? row.length : 0));
+                const fields = Array.from({ length: maxCols }, (_, i) => `col${i + 1}`);
+                const rows = content.map((row) => {
+                    const obj = {};
+                    fields.forEach((f, i) => obj[f] = Array.isArray(row) && row[i] !== undefined ? row[i] : null);
+                    return obj;
+                });
+                blocks.unshift({ kind: 'table', name, fields, rows });
+            }
+            else if (content.length > 0 && typeof content[0] === 'object' && content[0] !== null) {
+                // Array of objects
+                const fieldSet = [];
+                const processedRows = [];
+                for (const item of content) {
+                    if (typeof item === 'object' && item !== null) {
+                        const rowId = item.id !== undefined ? item.id : refCounter++;
+                        const flatRow = flattenRow(item, name, rowId);
+                        for (const key of Object.keys(flatRow)) {
+                            if (!fieldSet.includes(key))
+                                fieldSet.push(key);
+                        }
+                        processedRows.push(flatRow);
+                    }
+                }
+                blocks.unshift({ kind: 'table', name, fields: fieldSet, rows: processedRows });
+            }
+            else if (content.length > 0) {
+                // Array of primitives
+                blocks.unshift({ kind: 'table', name, fields: ['value'], rows: content.map(v => ({ value: v })) });
+            }
+        }
+        else if (typeof content === 'object' && content !== null) {
+            // Single object
+            const rowId = content.id !== undefined ? content.id : name;
+            const flatRow = flattenRow(content, name, rowId);
+            const fields = Object.keys(flatRow);
+            blocks.unshift({ kind: 'object', name, fields, rows: [flatRow] });
+        }
+    }
+    // Serialize blocks to ISON
     const lines = [];
-    for (const [name, records] of Object.entries(data)) {
-        if (!Array.isArray(records) || records.length === 0)
+    for (const block of blocks) {
+        if (block.fields.length === 0 || block.rows.length === 0)
             continue;
-        lines.push(`table.${name}`);
-        // Get fields from first record
-        const fields = Object.keys(records[0]);
-        lines.push(fields.join(' '));
-        // Add data rows
-        for (const record of records) {
-            const values = fields.map(f => formatValue(record[f]));
+        lines.push(`${block.kind}.${block.name}`);
+        lines.push(block.fields.join(' '));
+        for (const row of block.rows) {
+            const values = block.fields.map(f => formatValue(row[f]));
             lines.push(values.join(' '));
         }
         lines.push('');

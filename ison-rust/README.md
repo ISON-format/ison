@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/maheshvaikri-code/ison/main/images/ison_logo_git.png" alt="ISON Logo">
+  <img src="https://raw.githubusercontent.com/ISON-format/ison/main/images/ison_logo_git.png" alt="ISON Logo">
 </p>
 
 
@@ -44,9 +44,9 @@ ison-rs = { version = "1.0", default-features = false }
 ## Quick Start
 
 ```rust
-use ison_parser::{parse, dumps, Value};
+use ison_rs::{parse, dumps, Value};
 
-fn main() -> Result<(), ison_parser::ISONError> {
+fn main() -> Result<(), ison_rs::ISONError> {
     let ison_text = r#"
 table.users
 id:int name:string email active:bool
@@ -80,7 +80,7 @@ id:int name:string email active:bool
 ### Parsing
 
 ```rust
-use ison_parser::{parse, loads, loads_isonl};
+use ison_rs::{parse, loads, loads_isonl};
 
 // Parse from string
 let doc = parse(text)?;
@@ -93,14 +93,14 @@ let doc = loads_isonl(isonl_text)?;
 ### Serialization
 
 ```rust
-use ison_parser::{dumps, dumps_isonl};
+use ison_rs::{dumps, dumps_isonl};
 
 // To ISON string
 let ison = dumps(&doc, true);   // With column alignment
 let ison = dumps(&doc, false);  // Without alignment
 
-// To ISONL
-let isonl = dumps_isonl(&doc);
+// To ISONL (validates block kind/name/field names, hence Result)
+let isonl = dumps_isonl(&doc)?;
 
 // To JSON (requires serde feature)
 let json = doc.to_json(true);   // Pretty-printed
@@ -135,7 +135,7 @@ if doc.has("users") {
 ### Value Types
 
 ```rust
-use ison_parser::Value;
+use ison_rs::Value;
 
 // Value is an enum
 match value {
@@ -166,7 +166,7 @@ let r: Option<&Reference> = value.as_reference();
 ### References
 
 ```rust
-use ison_parser::Reference;
+use ison_rs::Reference;
 
 // Simple reference :42
 let ref1 = Reference::new("42");
@@ -186,7 +186,7 @@ ref3.relationship_type();    // Some("MEMBER_OF")
 ### Creating Documents Programmatically
 
 ```rust
-use ison_parser::{Document, Block, FieldInfo, Value};
+use ison_rs::{Document, Block, FieldInfo, Value};
 use std::collections::HashMap;
 
 let mut doc = Document::new();
@@ -233,7 +233,7 @@ table.users|id name email|2 Bob bob@example.com
 ```
 
 ```rust
-use ison_parser::{ison_to_isonl, isonl_to_ison};
+use ison_rs::{ison_to_isonl, isonl_to_ison};
 
 // Convert between formats
 let isonl = ison_to_isonl(ison_text)?;
@@ -243,7 +243,7 @@ let ison = isonl_to_ison(isonl_text)?;
 ## Error Handling
 
 ```rust
-use ison_parser::{parse, ISONError};
+use ison_rs::{parse, ISONError};
 
 match parse(text) {
     Ok(doc) => {
@@ -314,7 +314,7 @@ cargo test
 - [Documentation](https://www.ison.dev) | [www.getison.com](https://www.getison.com)
 - [Crates.io](https://crates.io/crates/ison-rs)
 - [API Docs](https://docs.rs/ison-rs)
-- [GitHub](https://github.com/maheshvaikri-code/ison)
+- [GitHub](https://github.com/ISON-format/ison)
 
 ## License
 

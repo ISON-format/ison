@@ -9,7 +9,7 @@
  * Compatibility: C++11 and later (auto-detects C++17 for std::optional)
  *
  * @author Mahesh Vaikri
- * @version 1.0.1
+ * @version 1.0.2
  */
 
 #ifndef ISON_PARSER_HPP
@@ -38,7 +38,7 @@
 namespace ison {
 
 // Version info
-static const char* VERSION = "1.0.1";
+static const char* VERSION = "1.0.2";
 
 // =============================================================================
 // Optional implementation for C++11/14
@@ -466,6 +466,7 @@ private:
                     case 'n': result += '\n'; break;
                     case 't': result += '\t'; break;
                     case 'r': result += '\r'; break;
+                    case '|': result += '|'; break;  // ISONL section delimiter
                     default: result += escape_char; break;
                 }
             } else {
@@ -1038,9 +1039,20 @@ private:
         std::string current;
         bool in_quotes = false;
 
-        for (size_t i = 0; i < line.size(); ++i) {
+        size_t i = 0;
+        while (i < line.size()) {
             char c = line[i];
-            if (c == '"' && (i == 0 || line[i-1] != '\\')) {
+
+            if (in_quotes && c == '\\' && i + 1 < line.size()) {
+                // Consume the escape pair so an escaped backslash before a
+                // closing quote ("foo\\") can't desync the quote tracking
+                current += c;
+                current += line[i + 1];
+                i += 2;
+                continue;
+            }
+
+            if (c == '"') {
                 in_quotes = !in_quotes;
                 current += c;
             } else if (c == '|' && !in_quotes) {
@@ -1051,6 +1063,8 @@ private:
             } else {
                 current += c;
             }
+
+            ++i;
         }
 
         size_t s = current.find_first_not_of(" \t");
@@ -1102,6 +1116,7 @@ public:
 
         for (size_t bi = 0; bi < doc.blocks.size(); ++bi) {
             const Block& block = doc.blocks[bi];
+            validate_envelope(block);
             std::string header = block.kind + "." + block.name;
 
             std::string fields_str;
@@ -1134,6 +1149,41 @@ public:
     }
 
 private:
+    // Characters that would corrupt the line structure if they appeared
+    // raw in the envelope (kind, name, or field names)
+    static bool envelope_char_forbidden(char c) {
+        return c == '|' || c == '"' || c == '\\' ||
+               c == ' ' || c == '\t' || c == '\n' || c == '\r';
+    }
+
+    static void validate_envelope_part(const std::string& label, const std::string& value) {
+        if (value.empty()) {
+            throw ISONError("ISONL block " + label + " must be non-empty");
+        }
+        for (size_t i = 0; i < value.size(); ++i) {
+            if (envelope_char_forbidden(value[i])) {
+                throw ISONError(
+                    "ISONL block " + label + " '" + value + "' contains characters that "
+                    "cannot be serialized (pipe, quote, backslash, or whitespace)");
+            }
+        }
+    }
+
+    // Reject kind/name/fields that cannot survive an ISONL round-trip
+    static void validate_envelope(const Block& block) {
+        validate_envelope_part("kind", block.kind);
+        validate_envelope_part("name", block.name);
+        if (block.kind.find('.') != std::string::npos) {
+            throw ISONError("ISONL block kind '" + block.kind + "' must not contain '.'");
+        }
+        if (block.kind[0] == '#') {
+            throw ISONError("ISONL block kind '" + block.kind + "' must not start with '#'");
+        }
+        for (size_t i = 0; i < block.fields.size(); ++i) {
+            validate_envelope_part("field name", block.fields[i]);
+        }
+    }
+
     static std::string value_to_isonl(const Value& v) {
         switch (v.type()) {
             case ValueType::Null: return "null";
@@ -1161,7 +1211,13 @@ private:
                            s.find('\t') != std::string::npos ||
                            s.find('"') != std::string::npos ||
                            s.find('\n') != std::string::npos ||
+                           s.find('\r') != std::string::npos ||
+                           s.find('\\') != std::string::npos ||
                            s.find('|') != std::string::npos);
+
+        if (!needs_quote && looks_like_number(s)) {
+            needs_quote = true;
+        }
 
         if (needs_quote) {
             std::string escaped;
@@ -1180,6 +1236,20 @@ private:
             return "\"" + escaped + "\"";
         }
         return s;
+    }
+
+    // Mirrors Serializer::looks_like_number (private there): bare numeric
+    // strings must be quoted or they would be re-parsed as numbers
+    static bool looks_like_number(const std::string& s) {
+        if (s.empty()) return false;
+        size_t start = (s[0] == '-') ? 1 : 0;
+        if (start == s.size()) return false;
+        for (size_t i = start; i < s.size(); ++i) {
+            if (s[i] != '.' && !std::isdigit(static_cast<unsigned char>(s[i]))) {
+                return false;
+            }
+        }
+        return true;
     }
 };
 

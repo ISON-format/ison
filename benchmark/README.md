@@ -413,7 +413,7 @@ In a 1M token context:
 ### Step 1: Clone Repository
 
 ```bash
-git clone https://github.com/maheshvaikri-code/ison.git
+git clone https://github.com/ISON-format/ison.git
 cd ison/benchmark
 ```
 

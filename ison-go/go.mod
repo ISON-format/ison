@@ -1,4 +1,4 @@
-module github.com/maheshvaikri-code/ison/ison-go
+module github.com/ISON-format/ison/ison-go
 
 go 1.21
 

@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ison-cli"
+version = "1.0.0"
+description = "Command-line interface for ISON - Token-efficient data format for AI/LLM workflows"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Mahesh Vaikri", email = "mahesh@ison.dev"}
+]
+keywords = [
+    "ison", "cli", "json", "yaml", "csv", "toml", "xml",
+    "data-format", "llm", "ai", "token-efficient", "converter"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Markup",
+    "Topic :: Utilities",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "ison-py>=1.0.3",
+    "click>=8.0.0",
+    "rich>=13.0.0",
+    "pyyaml>=6.0",
+    "toml>=0.10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+tokens = [
+    "tiktoken>=0.5.0",
+]
+db = [
+    "sqlalchemy>=2.0.0",
+]
+all = [
+    "tiktoken>=0.5.0",
+    "sqlalchemy>=2.0.0",
+]
+
+[project.scripts]
+ison = "ison_cli.main:cli"
+
+[project.urls]
+Homepage = "https://www.ison.dev"
+Documentation = "https://www.getison.com"
+Repository = "https://github.com/ISON-format/ison"
+Issues = "https://github.com/ISON-format/ison/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

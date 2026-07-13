@@ -1,9 +1,10 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/maheshvaikri-code/ison/main/images/ison_logo_git.png" alt="ISON Logo">
+  <img src="https://raw.githubusercontent.com/ISON-format/ison/main/images/ison_logo_git.png" alt="ISON Logo">
 </p>
 
-
 # isonantic-rs
+
+> **Note:** For Python, TypeScript, and Go, validation has been merged into the main parser packages. For Rust, isonantic-rs remains a separate crate due to Rust's module system.
 
 Type-safe validation and schema definitions for ISON format in Rust.
 
@@ -205,7 +206,7 @@ cargo test -p isonantic-rs
 - [Documentation](https://www.ison.dev) | [www.getison.com](https://www.getison.com)
 - [Crates.io](https://crates.io/crates/isonantic-rs)
 - [API Docs](https://docs.rs/isonantic-rs)
-- [GitHub](https://github.com/maheshvaikri-code/ison)
+- [GitHub](https://github.com/ISON-format/ison)
 
 ## License
 

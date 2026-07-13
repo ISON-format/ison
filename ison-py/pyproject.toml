@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ison-py"
-version = "1.0.2"
+version = "1.0.3"
 description = "ISON (Interchange Simple Object Notation) - A token-efficient data format for AI/LLM workflows"
 readme = "README.md"
 license = {text = "MIT"}
@@ -79,8 +79,8 @@ dev = [
 [project.urls]
 Homepage = "https://www.ison.dev"
 Documentation = "https://www.ison.dev"
-Repository = "https://github.com/maheshvaikri-code/ison"
-Issues = "https://github.com/maheshvaikri-code/ison/issues"
+Repository = "https://github.com/ISON-format/ison"
+Issues = "https://github.com/ISON-format/ison/issues"
 
 [project.scripts]
 ison = "ison_parser:main"

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/maheshvaikri-code/ison/main/images/ison_logo_git.png" alt="ISON Logo">
+  <img src="https://raw.githubusercontent.com/ISON-format/ison/main/images/ison_logo_git.png" alt="ISON Logo">
 </p>
 
 
@@ -25,6 +25,7 @@ ISON is a minimal, LLM-friendly data serialization format optimized for:
 - **Full ISON Support**: Tables, objects, references, type annotations
 - **ISONL Streaming**: Line-based format for large datasets
 - **JSON Export**: Convert ISON to JSON
+- **Built-in Validation**: Zod-like schema validation (see below)
 - **Browser & Node.js**: Works in both environments
 
 ## Installation
@@ -324,12 +325,61 @@ Run tests with:
 npm test
 ```
 
+## Built-in Validation (Zod-like)
+
+ison-ts includes a built-in validation module with a Zod-like API:
+
+```typescript
+import { validation } from 'ison-ts';
+const { i, document, ValidationError } = validation;
+
+// Define schemas
+const UserSchema = i.table('users', {
+  id: i.int(),
+  name: i.string().min(1).max(100),
+  email: i.string().email(),
+  active: i.boolean().default(true),
+});
+
+const OrderSchema = i.table('orders', {
+  id: i.string(),
+  user_id: i.ref(),
+  total: i.number().positive(),
+});
+
+// Create document schema
+const DocSchema = document({
+  users: UserSchema,
+  orders: OrderSchema,
+});
+
+// Parse and validate
+const doc = parse(isonText);
+const validated = DocSchema.parse(doc.toDict());
+
+// Safe parse (no throw)
+const result = DocSchema.safeParse(data);
+if (!result.success) {
+  console.log(result.error.errors);
+}
+```
+
+Features:
+- **String validation**: `min()`, `max()`, `email()`, `url()`, `regex()`
+- **Number validation**: `min()`, `max()`, `int()`, `positive()`, `negative()`
+- **Reference validation**: ISON reference support
+- **Object/Array schemas**: With extend, pick, omit
+- **Custom refinements**: `refine(fn, message)`
+- **Type inference**: `InferType<typeof Schema>`
+
+> **Note:** The standalone `isonantic-ts` package is deprecated. Use `ison-ts/validation` instead.
+
 ## Links
 
 - [Documentation](https://www.ison.dev) | [www.getison.com](https://www.getison.com)
 - [Specification](https://www.ison.dev/spec.html)
 - [JavaScript Package](https://www.npmjs.com/package/ison-parser)
-- [GitHub](https://github.com/maheshvaikri-code/ison)
+- [GitHub](https://github.com/ISON-format/ison)
 
 ## License
 

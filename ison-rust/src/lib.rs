@@ -35,7 +35,7 @@ pub mod plugins;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: &str = "1.0.1";
+pub const VERSION: &str = "1.0.2";
 
 // =============================================================================
 // Error Types
@@ -571,6 +571,7 @@ impl<'a> Parser<'a> {
                         'r' => result.push('\r'),
                         '\\' => result.push('\\'),
                         '"' => result.push('"'),
+                        '|' => result.push('|'),
                         _ => result.push(next),
                     }
                     i += 2;
@@ -852,6 +853,214 @@ impl Serializer {
 // ISONL Parser/Serializer
 // =============================================================================
 
+/// Characters that would corrupt the line structure if they appeared raw in
+/// the envelope (kind, name, or field names)
+const ISONL_ENVELOPE_FORBIDDEN: &[char] = &['|', '"', '\\', ' ', '\t', '\n', '\r'];
+
+/// Split an ISONL line by unquoted pipe characters.
+///
+/// The scanner is both quote-aware and escape-aware: while inside quotes, a
+/// backslash consumes the escape pair (both chars are pushed and the cursor
+/// advances by two) so a value ending in an escaped backslash (`"x \\"`)
+/// cannot desync the quote tracking and let a later `|` split wrongly.
+fn split_isonl_sections(line: &str) -> Vec<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut sections = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut i = 0;
+
+    while i < chars.len() {
+        let ch = chars[i];
+
+        if in_quotes && ch == '\\' && i + 1 < chars.len() {
+            // Consume the escape pair so an escaped backslash before a
+            // closing quote ("foo\\") can't desync the quote tracking
+            current.push(ch);
+            current.push(chars[i + 1]);
+            i += 2;
+            continue;
+        }
+
+        if ch == '"' {
+            in_quotes = !in_quotes;
+            current.push(ch);
+        } else if ch == '|' && !in_quotes {
+            sections.push(current.trim().to_string());
+            current = String::new();
+        } else {
+            current.push(ch);
+        }
+
+        i += 1;
+    }
+
+    sections.push(current.trim().to_string());
+    sections
+}
+
+/// Tokenize the values section of an ISONL line.
+///
+/// Returns `(token, was_quoted)` pairs. Unlike regular ISON lines, ISONL has
+/// no inline comments (comments are whole lines only), so `#` is never
+/// stripped here. Quoted tokens keep their string type during parsing.
+fn tokenize_isonl_values(line: &str) -> Vec<(String, bool)> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+
+    while i < chars.len() {
+        // Skip whitespace
+        while i < chars.len() && (chars[i] == ' ' || chars[i] == '\t') {
+            i += 1;
+        }
+        if i >= chars.len() {
+            break;
+        }
+
+        if chars[i] == '"' {
+            // Quoted string with escape handling
+            let mut result = String::new();
+            i += 1; // skip opening quote
+            while i < chars.len() {
+                let ch = chars[i];
+                if ch == '"' {
+                    i += 1; // skip closing quote
+                    break;
+                }
+                if ch == '\\' {
+                    if i + 1 < chars.len() {
+                        let next = chars[i + 1];
+                        match next {
+                            'n' => result.push('\n'),
+                            't' => result.push('\t'),
+                            'r' => result.push('\r'),
+                            '\\' => result.push('\\'),
+                            '"' => result.push('"'),
+                            '|' => result.push('|'),
+                            _ => result.push(next),
+                        }
+                        i += 2;
+                    } else {
+                        result.push('\\');
+                        i += 1;
+                    }
+                } else {
+                    result.push(ch);
+                    i += 1;
+                }
+            }
+            tokens.push((result, true));
+        } else {
+            // Unquoted token
+            let start = i;
+            while i < chars.len() && chars[i] != ' ' && chars[i] != '\t' {
+                i += 1;
+            }
+            tokens.push((chars[start..i].iter().collect(), false));
+        }
+    }
+
+    tokens
+}
+
+/// Quote and escape a string for the ISONL values section if needed
+fn isonl_quote_if_needed(s: &str) -> String {
+    if s.is_empty() {
+        return "\"\"".to_string();
+    }
+
+    let needs_quote = s.contains(' ')
+        || s.contains('\t')
+        || s.contains('"')
+        || s.contains('\n')
+        || s.contains('\r')
+        || s.contains('\\')
+        || s.contains('|')
+        || s == "true"
+        || s == "false"
+        || s == "null"
+        || s.starts_with(':')
+        || s.parse::<f64>().is_ok();
+
+    if !needs_quote {
+        return s.to_string();
+    }
+
+    let escaped = s
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\t', "\\t")
+        .replace('\r', "\\r")
+        .replace('|', "\\|");
+
+    format!("\"{}\"", escaped)
+}
+
+/// Serialize a value for the ISONL values section
+fn isonl_serialize_value(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+        Value::Int(i) => i.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Reference(r) => r.to_ison(),
+        Value::String(s) => isonl_quote_if_needed(s),
+    }
+}
+
+/// Reject kind/name/fields that cannot survive an ISONL round-trip
+fn validate_isonl_envelope(block: &Block) -> Result<()> {
+    for (label, value) in [("kind", &block.kind), ("name", &block.name)] {
+        if value.is_empty() {
+            return Err(ISONError {
+                message: format!("ISONL block {} must be non-empty", label),
+                line: None,
+            });
+        }
+        if value.contains(ISONL_ENVELOPE_FORBIDDEN) {
+            return Err(ISONError {
+                message: format!(
+                    "ISONL block {} '{}' contains characters that cannot be serialized (pipe, quote, backslash, or whitespace)",
+                    label, value
+                ),
+                line: None,
+            });
+        }
+    }
+    if block.kind.contains('.') {
+        return Err(ISONError {
+            message: format!("ISONL block kind '{}' must not contain '.'", block.kind),
+            line: None,
+        });
+    }
+    if block.kind.starts_with('#') {
+        return Err(ISONError {
+            message: format!("ISONL block kind '{}' must not start with '#'", block.kind),
+            line: None,
+        });
+    }
+    for field in &block.fields {
+        if field.is_empty() {
+            return Err(ISONError {
+                message: "ISONL field names must be non-empty".to_string(),
+                line: None,
+            });
+        }
+        if field.contains(ISONL_ENVELOPE_FORBIDDEN) {
+            return Err(ISONError {
+                message: format!(
+                    "ISONL field name '{}' contains characters that cannot be serialized (pipe, quote, backslash, or whitespace)",
+                    field
+                ),
+                line: None,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Parse ISONL format
 pub fn parse_isonl(text: &str) -> Result<Document> {
     let mut doc = Document::new();
@@ -863,17 +1072,17 @@ pub fn parse_isonl(text: &str) -> Result<Document> {
             continue;
         }
 
-        let parts: Vec<&str> = line.split('|').collect();
-        if parts.len() != 3 {
+        let sections = split_isonl_sections(line);
+        if sections.len() != 3 {
             return Err(ISONError {
                 message: format!("Invalid ISONL line: {}", line),
                 line: Some(line_num + 1),
             });
         }
 
-        let header = parts[0];
-        let fields_part = parts[1];
-        let values_part = parts[2];
+        let header = sections[0].as_str();
+        let fields_part = sections[1].as_str();
+        let values_part = sections[2].as_str();
 
         let dot_index = header.find('.').ok_or_else(|| ISONError {
             message: format!("Invalid ISONL header: {}", header),
@@ -908,15 +1117,21 @@ pub fn parse_isonl(text: &str) -> Result<Document> {
             idx
         };
 
-        // Parse values
+        // Parse values (quoted tokens keep their string type)
         let parser = Parser::new("");
-        let values = parser.tokenize_line(values_part);
+        let values = tokenize_isonl_values(values_part);
         let mut row = Row::new();
 
         let block = &doc.blocks[block_idx];
         for (i, field) in block.fields.iter().enumerate() {
             if i < values.len() {
-                row.insert(field.clone(), parser.parse_value(&values[i])?);
+                let (token, was_quoted) = &values[i];
+                let value = if *was_quoted {
+                    Value::String(token.clone())
+                } else {
+                    parser.parse_value(token)?
+                };
+                row.insert(field.clone(), value);
             }
         }
 
@@ -927,11 +1142,15 @@ pub fn parse_isonl(text: &str) -> Result<Document> {
 }
 
 /// Serialize to ISONL format
-pub fn dumps_isonl(doc: &Document) -> String {
-    let serializer = Serializer::new(false);
+///
+/// Returns an error if any block's kind, name, or field names contain
+/// characters that cannot survive an ISONL round-trip (pipe, quote,
+/// backslash, or whitespace; additionally `.` or a leading `#` in the kind).
+pub fn dumps_isonl(doc: &Document) -> Result<String> {
     let mut lines = Vec::new();
 
     for block in &doc.blocks {
+        validate_isonl_envelope(block)?;
         let header = format!("{}.{}", block.kind, block.name);
         let fields: Vec<String> = block
             .field_info
@@ -952,7 +1171,7 @@ pub fn dumps_isonl(doc: &Document) -> String {
                 .iter()
                 .map(|f| {
                     row.get(f)
-                        .map(|v| serializer.serialize_value(v))
+                        .map(isonl_serialize_value)
                         .unwrap_or_else(|| "null".to_string())
                 })
                 .collect();
@@ -960,7 +1179,7 @@ pub fn dumps_isonl(doc: &Document) -> String {
         }
     }
 
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 // =============================================================================
@@ -1004,7 +1223,7 @@ pub fn loads_isonl(text: &str) -> Result<Document> {
 /// Convert ISON text to ISONL text
 pub fn ison_to_isonl(ison_text: &str) -> Result<String> {
     let doc = parse(ison_text)?;
-    Ok(dumps_isonl(&doc))
+    dumps_isonl(&doc)
 }
 
 /// Convert ISONL text to ISON text
@@ -1013,12 +1232,39 @@ pub fn isonl_to_ison(isonl_text: &str) -> Result<String> {
     Ok(dumps(&doc, false))
 }
 
+/// Options for json_to_ison conversion
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone)]
+pub struct JsonToIsonOptions {
+    /// Whether to flatten nested objects into separate tables (default: true)
+    pub flatten: bool,
+    /// Whether to align columns in output (default: false)
+    pub align_columns: bool,
+}
+
+#[cfg(feature = "serde")]
+impl Default for JsonToIsonOptions {
+    fn default() -> Self {
+        Self {
+            flatten: true,
+            align_columns: false,
+        }
+    }
+}
+
 /// Convert JSON to ISON format (requires serde feature)
 ///
 /// Converts a JSON object where keys are block names and values are arrays of objects
-/// into ISON format.
+/// into ISON format. Nested objects and arrays are flattened into separate tables
+/// with references.
 #[cfg(feature = "serde")]
 pub fn json_to_ison(json_text: &str) -> Result<String> {
+    json_to_ison_with_options(json_text, JsonToIsonOptions::default())
+}
+
+/// Convert JSON to ISON format with options (requires serde feature)
+#[cfg(feature = "serde")]
+pub fn json_to_ison_with_options(json_text: &str, opts: JsonToIsonOptions) -> Result<String> {
     let json_value: serde_json::Value = serde_json::from_str(json_text)
         .map_err(|e| ISONError { message: format!("JSON parse error: {}", e), line: None })?;
 
@@ -1026,78 +1272,389 @@ pub fn json_to_ison(json_text: &str) -> Result<String> {
         .ok_or_else(|| ISONError { message: "JSON must be an object".to_string(), line: None })?;
 
     let mut doc = Document::new();
+    let mut extra_blocks: Vec<Block> = Vec::new();
+    let mut ref_counter: i64 = 1;
 
-    for (block_name, block_value) in obj {
-        let arr = block_value.as_array()
-            .ok_or_else(|| ISONError { message: format!("Block '{}' must be an array", block_name), line: None })?;
+    // Helper to check if value is a nested object
+    fn is_nested_object(val: &serde_json::Value) -> bool {
+        val.is_object()
+    }
 
-        if arr.is_empty() {
-            continue;
+    // Helper to check if value is an array of objects
+    fn is_array_of_objects(val: &serde_json::Value) -> bool {
+        if let Some(arr) = val.as_array() {
+            !arr.is_empty() && arr[0].is_object()
+        } else {
+            false
         }
+    }
 
-        // Get fields from first object
-        let first_obj = arr[0].as_object()
-            .ok_or_else(|| ISONError { message: "Array items must be objects".to_string(), line: None })?;
+    // Helper to check if value is an array of primitives
+    fn is_array_of_primitives(val: &serde_json::Value) -> bool {
+        if let Some(arr) = val.as_array() {
+            arr.is_empty() || (!arr[0].is_object() && !arr[0].is_array())
+        } else {
+            false
+        }
+    }
 
-        let fields: Vec<String> = first_obj.keys().cloned().collect();
-        let field_info: Vec<FieldInfo> = fields.iter()
-            .map(|f| FieldInfo { name: f.clone(), field_type: None, is_computed: false })
-            .collect();
+    // Helper to check if value is an array of arrays
+    fn is_array_of_arrays(val: &serde_json::Value) -> bool {
+        if let Some(arr) = val.as_array() {
+            !arr.is_empty() && arr[0].is_array()
+        } else {
+            false
+        }
+    }
 
-        let mut rows = Vec::new();
-        for item in arr {
-            let item_obj = item.as_object()
-                .ok_or_else(|| ISONError { message: "Array items must be objects".to_string(), line: None })?;
-
-            let mut row = Row::new();
-            for field in &fields {
-                if let Some(val) = item_obj.get(field) {
-                    let value = match val {
-                        serde_json::Value::Null => Value::Null,
-                        serde_json::Value::Bool(b) => Value::Bool(*b),
-                        serde_json::Value::Number(n) => {
-                            if let Some(i) = n.as_i64() {
-                                Value::Int(i)
-                            } else if let Some(f) = n.as_f64() {
-                                Value::Float(f)
-                            } else {
-                                Value::String(n.to_string())
-                            }
-                        }
-                        serde_json::Value::String(s) => {
-                            // Check if it's a reference (starts with :)
-                            if s.starts_with(':') {
-                                // Parse reference: :id or :type:id
-                                let parts: Vec<&str> = s[1..].splitn(2, ':').collect();
-                                if parts.len() == 2 {
-                                    Value::Reference(Reference::with_type(parts[1], parts[0]))
-                                } else {
-                                    Value::Reference(Reference::new(parts[0]))
-                                }
-                            } else {
-                                Value::String(s.clone())
-                            }
-                        }
-                        _ => Value::String(val.to_string()),
-                    };
-                    row.insert(field.clone(), value);
+    // Helper to convert JSON value to ISON Value
+    fn json_to_value(val: &serde_json::Value) -> Value {
+        match val {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Bool(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Int(i)
+                } else if let Some(f) = n.as_f64() {
+                    Value::Float(f)
+                } else {
+                    Value::String(n.to_string())
                 }
             }
-            rows.push(row);
+            serde_json::Value::String(s) => {
+                if s.starts_with(':') {
+                    let parts: Vec<&str> = s[1..].splitn(2, ':').collect();
+                    if parts.len() == 2 {
+                        Value::Reference(Reference::with_type(parts[1], parts[0]))
+                    } else {
+                        Value::Reference(Reference::new(parts[0]))
+                    }
+                } else {
+                    Value::String(s.clone())
+                }
+            }
+            _ => Value::String(val.to_string()),
         }
+    }
 
-        let block = Block {
-            kind: "table".to_string(),
-            name: block_name.clone(),
-            fields,
-            field_info,
-            rows,
-            summary_rows: vec![],
-        };
+    for (block_name, block_value) in obj {
+        if let Some(arr) = block_value.as_array() {
+            // Handle array of arrays
+            if is_array_of_arrays(block_value) {
+                let max_cols = arr.iter()
+                    .filter_map(|r| r.as_array())
+                    .map(|a| a.len())
+                    .max()
+                    .unwrap_or(0);
+
+                let fields: Vec<String> = (1..=max_cols).map(|i| format!("col{}", i)).collect();
+                let field_info: Vec<FieldInfo> = fields.iter()
+                    .map(|f| FieldInfo::new(f))
+                    .collect();
+
+                let mut rows = Vec::new();
+                for item in arr {
+                    if let Some(inner_arr) = item.as_array() {
+                        let mut row = Row::new();
+                        for (i, field) in fields.iter().enumerate() {
+                            if i < inner_arr.len() {
+                                row.insert(field.clone(), json_to_value(&inner_arr[i]));
+                            } else {
+                                row.insert(field.clone(), Value::Null);
+                            }
+                        }
+                        rows.push(row);
+                    }
+                }
+
+                doc.blocks.push(Block {
+                    kind: "table".to_string(),
+                    name: block_name.clone(),
+                    fields,
+                    field_info,
+                    rows,
+                    summary_rows: vec![],
+                });
+                continue;
+            }
+
+            // Handle array of objects
+            if arr.is_empty() {
+                continue;
+            }
+
+            if !arr[0].is_object() {
+                // Array of primitives at top level
+                let fields = vec!["value".to_string()];
+                let field_info = vec![FieldInfo::new("value")];
+                let rows: Vec<Row> = arr.iter()
+                    .map(|v| {
+                        let mut row = Row::new();
+                        row.insert("value".to_string(), json_to_value(v));
+                        row
+                    })
+                    .collect();
+
+                doc.blocks.push(Block {
+                    kind: "table".to_string(),
+                    name: block_name.clone(),
+                    fields,
+                    field_info,
+                    rows,
+                    summary_rows: vec![],
+                });
+                continue;
+            }
+
+            // Collect all fields from all objects
+            let mut field_set: Vec<String> = Vec::new();
+            let mut rows = Vec::new();
+
+            for item in arr {
+                if let Some(item_obj) = item.as_object() {
+                    // Determine row ID
+                    let row_id: i64 = if let Some(id_val) = item_obj.get("id") {
+                        id_val.as_i64().unwrap_or_else(|| {
+                            let id = ref_counter;
+                            ref_counter += 1;
+                            id
+                        })
+                    } else {
+                        let id = ref_counter;
+                        ref_counter += 1;
+                        id
+                    };
+
+                    let parent_ref = Reference::new(row_id.to_string());
+
+                    let mut row = Row::new();
+                    for (key, val) in item_obj {
+                        if opts.flatten && (is_nested_object(val) || is_array_of_objects(val) || is_array_of_primitives(val)) {
+                            let nested_name = format!("{}_{}", block_name, key);
+
+                            if is_nested_object(val) {
+                                // Nested object - create separate table
+                                if let Some(nested_obj) = val.as_object() {
+                                    let parent_id_field = format!("{}_id", block_name);
+                                    let mut nested_fields = vec![parent_id_field.clone()];
+                                    let mut nested_row = Row::new();
+                                    nested_row.insert(parent_id_field.clone(), Value::Reference(parent_ref.clone()));
+
+                                    for (nk, nv) in nested_obj {
+                                        if !is_nested_object(nv) && !is_array_of_objects(nv) && !is_array_of_primitives(nv) {
+                                            nested_row.insert(nk.clone(), json_to_value(nv));
+                                            if !nested_fields.contains(nk) {
+                                                nested_fields.push(nk.clone());
+                                            }
+                                        }
+                                    }
+
+                                    // Add to extra blocks
+                                    if nested_row.len() > 1 {
+                                        if let Some(existing) = extra_blocks.iter_mut().find(|b| b.name == nested_name) {
+                                            for f in &nested_fields {
+                                                if !existing.fields.contains(f) {
+                                                    existing.fields.push(f.clone());
+                                                    existing.field_info.push(FieldInfo::new(f));
+                                                }
+                                            }
+                                            existing.rows.push(nested_row);
+                                        } else {
+                                            let field_info = nested_fields.iter().map(|f| FieldInfo::new(f)).collect();
+                                            extra_blocks.push(Block {
+                                                kind: "table".to_string(),
+                                                name: nested_name.clone(),
+                                                fields: nested_fields,
+                                                field_info,
+                                                rows: vec![nested_row],
+                                                summary_rows: vec![],
+                                            });
+                                        }
+                                    }
+                                }
+                            } else if is_array_of_objects(val) {
+                                // Array of objects - create separate table
+                                if let Some(arr) = val.as_array() {
+                                    for arr_item in arr {
+                                        if let Some(nested_obj) = arr_item.as_object() {
+                                            let parent_id_field = format!("{}_id", block_name);
+                                            let mut nested_fields = vec![parent_id_field.clone()];
+                                            let mut nested_row = Row::new();
+                                            nested_row.insert(parent_id_field.clone(), Value::Reference(parent_ref.clone()));
+
+                                            for (nk, nv) in nested_obj {
+                                                if !is_nested_object(nv) && !is_array_of_objects(nv) && !is_array_of_primitives(nv) {
+                                                    nested_row.insert(nk.clone(), json_to_value(nv));
+                                                    if !nested_fields.contains(nk) {
+                                                        nested_fields.push(nk.clone());
+                                                    }
+                                                }
+                                            }
+
+                                            if nested_row.len() > 1 {
+                                                if let Some(existing) = extra_blocks.iter_mut().find(|b| b.name == nested_name) {
+                                                    for f in &nested_fields {
+                                                        if !existing.fields.contains(f) {
+                                                            existing.fields.push(f.clone());
+                                                            existing.field_info.push(FieldInfo::new(f));
+                                                        }
+                                                    }
+                                                    existing.rows.push(nested_row);
+                                                } else {
+                                                    let field_info = nested_fields.iter().map(|f| FieldInfo::new(f)).collect();
+                                                    extra_blocks.push(Block {
+                                                        kind: "table".to_string(),
+                                                        name: nested_name.clone(),
+                                                        fields: nested_fields,
+                                                        field_info,
+                                                        rows: vec![nested_row],
+                                                        summary_rows: vec![],
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if is_array_of_primitives(val) {
+                                // Array of primitives - create separate table with value column
+                                if let Some(arr) = val.as_array() {
+                                    let parent_id_field = format!("{}_id", block_name);
+                                    for prim in arr {
+                                        let mut nested_row = Row::new();
+                                        nested_row.insert(parent_id_field.clone(), Value::Reference(parent_ref.clone()));
+                                        nested_row.insert("value".to_string(), json_to_value(prim));
+
+                                        if let Some(existing) = extra_blocks.iter_mut().find(|b| b.name == nested_name) {
+                                            existing.rows.push(nested_row);
+                                        } else {
+                                            let nested_fields = vec![parent_id_field.clone(), "value".to_string()];
+                                            let field_info = nested_fields.iter().map(|f| FieldInfo::new(f)).collect();
+                                            extra_blocks.push(Block {
+                                                kind: "table".to_string(),
+                                                name: nested_name.clone(),
+                                                fields: nested_fields,
+                                                field_info,
+                                                rows: vec![nested_row],
+                                                summary_rows: vec![],
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            // Don't add this field to the main row
+                        } else {
+                            row.insert(key.clone(), json_to_value(val));
+                            if !field_set.contains(key) {
+                                field_set.push(key.clone());
+                            }
+                        }
+                    }
+                    rows.push(row);
+                }
+            }
+
+            let field_info: Vec<FieldInfo> = field_set.iter()
+                .map(|f| FieldInfo::new(f))
+                .collect();
+
+            doc.blocks.push(Block {
+                kind: "table".to_string(),
+                name: block_name.clone(),
+                fields: field_set,
+                field_info,
+                rows,
+                summary_rows: vec![],
+            });
+        } else if let Some(obj_value) = block_value.as_object() {
+            // Single object
+            let row_id = obj_value.get("id")
+                .and_then(|v| v.as_i64())
+                .map(|i| i.to_string())
+                .unwrap_or_else(|| block_name.clone());
+            let parent_ref = Reference::new(row_id);
+
+            let mut fields: Vec<String> = Vec::new();
+            let mut row = Row::new();
+
+            for (key, val) in obj_value {
+                if opts.flatten && (is_nested_object(val) || is_array_of_objects(val) || is_array_of_primitives(val)) {
+                    // Handle nested structures similar to above
+                    let nested_name = format!("{}_{}", block_name, key);
+                    let parent_id_field = format!("{}_id", block_name);
+
+                    if is_nested_object(val) {
+                        if let Some(nested_obj) = val.as_object() {
+                            let mut nested_fields = vec![parent_id_field.clone()];
+                            let mut nested_row = Row::new();
+                            nested_row.insert(parent_id_field.clone(), Value::Reference(parent_ref.clone()));
+
+                            for (nk, nv) in nested_obj {
+                                if !is_nested_object(nv) && !is_array_of_objects(nv) && !is_array_of_primitives(nv) {
+                                    nested_row.insert(nk.clone(), json_to_value(nv));
+                                    nested_fields.push(nk.clone());
+                                }
+                            }
+
+                            if nested_row.len() > 1 {
+                                let field_info = nested_fields.iter().map(|f| FieldInfo::new(f)).collect();
+                                extra_blocks.push(Block {
+                                    kind: "table".to_string(),
+                                    name: nested_name,
+                                    fields: nested_fields,
+                                    field_info,
+                                    rows: vec![nested_row],
+                                    summary_rows: vec![],
+                                });
+                            }
+                        }
+                    } else if is_array_of_primitives(val) {
+                        if let Some(arr) = val.as_array() {
+                            let nested_fields = vec![parent_id_field.clone(), "value".to_string()];
+                            let field_info = nested_fields.iter().map(|f| FieldInfo::new(f)).collect();
+                            let nested_rows: Vec<Row> = arr.iter().map(|prim| {
+                                let mut r = Row::new();
+                                r.insert(parent_id_field.clone(), Value::Reference(parent_ref.clone()));
+                                r.insert("value".to_string(), json_to_value(prim));
+                                r
+                            }).collect();
+
+                            extra_blocks.push(Block {
+                                kind: "table".to_string(),
+                                name: nested_name,
+                                fields: nested_fields,
+                                field_info,
+                                rows: nested_rows,
+                                summary_rows: vec![],
+                            });
+                        }
+                    }
+                } else {
+                    row.insert(key.clone(), json_to_value(val));
+                    fields.push(key.clone());
+                }
+            }
+
+            let field_info: Vec<FieldInfo> = fields.iter()
+                .map(|f| FieldInfo::new(f))
+                .collect();
+
+            doc.blocks.push(Block {
+                kind: "object".to_string(),
+                name: block_name.clone(),
+                fields,
+                field_info,
+                rows: vec![row],
+                summary_rows: vec![],
+            });
+        }
+    }
+
+    // Add extra blocks from flattened structures
+    for block in extra_blocks {
         doc.blocks.push(block);
     }
 
-    Ok(dumps(&doc, false))
+    Ok(dumps(&doc, opts.align_columns))
 }
 
 /// Convert ISON to JSON format (requires serde feature)
@@ -1218,7 +1775,7 @@ id name email
 
     #[test]
     fn test_version() {
-        assert_eq!(VERSION, "1.0.1");
+        assert_eq!(VERSION, "1.0.2");
     }
 
     #[test]
@@ -1253,5 +1810,172 @@ id name email
         // Verify it's valid JSON
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(parsed.get("users").is_some());
+    }
+
+    fn make_string_block(kind: &str, name: &str, fields: &[&str], rows: Vec<Row>) -> Document {
+        let mut block = Block::new(kind, name);
+        for f in fields {
+            block.fields.push(f.to_string());
+            block.field_info.push(FieldInfo::new(*f));
+        }
+        block.rows = rows;
+        let mut doc = Document::new();
+        doc.blocks.push(block);
+        doc
+    }
+
+    #[test]
+    fn test_isonl_escaping_integrity() {
+        // Regression: delimiter/escape chars in values must survive a round-trip
+        let adversarial: Vec<&str> = vec![
+            "C:\\path\\", // trailing backslash used to desync quote tracking
+            "\\",
+            "a\\",
+            "ends with backslash \\",
+            "pipe|inside",
+            "quote \" inside",
+            "mix \\\" of both",
+            "line1\nline2",
+            "tab\there",
+            "cr\rhere",
+            "crlf\r\nend",
+            "123",
+            "true",
+            ":ref",
+            "",
+            "\\|",
+            " leading and trailing ",
+        ];
+
+        let rows: Vec<Row> = adversarial
+            .iter()
+            .map(|s| {
+                let mut row = Row::new();
+                row.insert("v".to_string(), Value::String(s.to_string()));
+                row
+            })
+            .collect();
+        let doc = make_string_block("table", "adversarial", &["v"], rows);
+
+        let out = dumps_isonl(&doc).unwrap();
+        let parsed = parse_isonl(&out).unwrap();
+        let got: Vec<String> = parsed.blocks[0]
+            .rows
+            .iter()
+            .map(|r| r.get("v").unwrap().as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(got, adversarial, "round-trip corrupted values");
+
+        // Compound case: a quoted value ending in an escaped backslash followed
+        // by a pipe-bearing value on the same line — the exact shape that
+        // desynced quote tracking and corrupted section splitting
+        let compound_rows: Vec<Row> = [("x \\", "y|z"), ("x\\", "y|z")]
+            .iter()
+            .map(|(a, b)| {
+                let mut row = Row::new();
+                row.insert("a".to_string(), Value::String(a.to_string()));
+                row.insert("b".to_string(), Value::String(b.to_string()));
+                row
+            })
+            .collect();
+        let doc = make_string_block("table", "compound", &["a", "b"], compound_rows.clone());
+
+        let out = dumps_isonl(&doc).unwrap();
+        let parsed = parse_isonl(&out).unwrap();
+        assert_eq!(parsed.blocks[0].rows, compound_rows);
+    }
+
+    #[test]
+    fn test_isonl_roundtrip_property() {
+        // Property test: random strings over a hostile alphabet must round-trip.
+        // Deterministic LCG so no rand crate is needed.
+        struct Lcg {
+            state: u64,
+        }
+        impl Lcg {
+            fn next_int(&mut self, lo: u64, hi: u64) -> u64 {
+                self.state = (self.state * 1103515245 + 12345) % 2147483648;
+                lo + (self.state % (hi - lo + 1))
+            }
+        }
+
+        let alphabet: [&str; 16] = [
+            "a", "b", " ", "|", "\"", "\\", "\n", "\r", "\t", ".", ":", "#", "0", "1", "true",
+            "null",
+        ];
+        let mut rng = Lcg { state: 20260713 };
+
+        for trial in 0..300 {
+            let num_fields = rng.next_int(1, 4) as usize;
+            let fields: Vec<String> = (0..num_fields).map(|i| format!("f{}", i)).collect();
+            let field_refs: Vec<&str> = fields.iter().map(|f| f.as_str()).collect();
+
+            let num_rows = rng.next_int(1, 3) as usize;
+            let mut rows: Vec<Row> = Vec::new();
+            for _ in 0..num_rows {
+                let mut row = Row::new();
+                for f in &fields {
+                    let len = rng.next_int(0, 12) as usize;
+                    let mut s = String::new();
+                    for _ in 0..len {
+                        s.push_str(alphabet[rng.next_int(0, alphabet.len() as u64 - 1) as usize]);
+                    }
+                    row.insert(f.clone(), Value::String(s));
+                }
+                rows.push(row);
+            }
+
+            let doc = make_string_block("table", "t", &field_refs, rows.clone());
+            let out = dumps_isonl(&doc).unwrap();
+            let parsed = parse_isonl(&out)
+                .unwrap_or_else(|e| panic!("trial {}: parse failed ({}) for {:?}", trial, e, out));
+            assert_eq!(
+                parsed.blocks[0].rows, rows,
+                "trial {}: {:?} -> {:?}",
+                trial, rows, out
+            );
+        }
+    }
+
+    #[test]
+    fn test_isonl_envelope_validation() {
+        // Envelope values that can't be serialized must be rejected, not corrupted
+        fn make_doc(kind: &str, name: &str, fields: &[&str]) -> Document {
+            let mut row = Row::new();
+            for f in fields {
+                row.insert(f.to_string(), Value::Int(1));
+            }
+            make_string_block(kind, name, fields, vec![row])
+        }
+
+        let bad_cases: Vec<Document> = vec![
+            make_doc("ta|ble", "t", &["id"]),
+            make_doc("ta ble", "t", &["id"]),
+            make_doc("t.able", "t", &["id"]),
+            make_doc("#table", "t", &["id"]),
+            make_doc("", "t", &["id"]),
+            make_doc("table", "na|me", &["id"]),
+            make_doc("table", "na\nme", &["id"]),
+            make_doc("table", "na me", &["id"]),
+            make_doc("table", "", &["id"]),
+            make_doc("table", "t", &["bad field"]),
+            make_doc("table", "t", &["bad|field"]),
+            make_doc("table", "t", &[""]),
+        ];
+        for doc in &bad_cases {
+            assert!(
+                dumps_isonl(doc).is_err(),
+                "should have rejected envelope kind={:?} name={:?} fields={:?}",
+                doc.blocks[0].kind,
+                doc.blocks[0].name,
+                doc.blocks[0].fields
+            );
+        }
+
+        // Dots in the block NAME are legal — the parser splits on the first dot
+        let doc = make_doc("table", "v1.2", &["id"]);
+        let parsed = parse_isonl(&dumps_isonl(&doc).unwrap()).unwrap();
+        assert_eq!(parsed.blocks[0].kind, "table");
+        assert_eq!(parsed.blocks[0].name, "v1.2");
     }
 }

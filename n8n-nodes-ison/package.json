@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-ison",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "n8n nodes for ISON (Interchange Simple Object Notation) - token-efficient data format for LLMs",
   "keywords": [
     "n8n-community-node-package",
@@ -18,11 +18,11 @@
   "homepage": "https://www.ison.dev",
   "author": {
     "name": "Mahesh Vaikri",
-    "url": "https://github.com/maheshvaikri-code"
+    "url": "https://github.com/ISON-format"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/maheshvaikri-code/ison.git"
+    "url": "https://github.com/ISON-format/ison.git"
   },
   "main": "index.js",
   "scripts": {
@@ -51,7 +51,7 @@
     "eslint": "^8.0.0"
   },
   "dependencies": {
-    "ison-parser": "^1.0.0"
+    "ison-parser": "^1.0.2"
   },
   "peerDependencies": {
     "n8n-workflow": "*"

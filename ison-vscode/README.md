@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/maheshvaikri-code/ison/main/images/ison_logo_white_bg.png" alt="ISON Logo" width="300">
+  <img src="https://raw.githubusercontent.com/ISON-format/ison/main/images/ison_logo_white_bg.png" alt="ISON Logo" width="300">
 </p>
 
 # ISON Language Support for VS Code
@@ -107,7 +107,7 @@ table.orders|id:int user_id:ref product|1 :1 Widget
 
 - [ISON Website](https://www.ison.dev)
 - [Documentation](https://www.getison.com)
-- [GitHub Repository](https://github.com/maheshvaikri-code/ison)
+- [GitHub Repository](https://github.com/ISON-format/ison)
 - [Playground](https://www.ison.dev/playground.html)
 
 ## License

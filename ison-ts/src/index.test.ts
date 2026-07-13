@@ -11,6 +11,7 @@ import {
   Reference,
   Document,
   Block,
+  Row,
   isNull,
   isBool,
   isInt,
@@ -317,6 +318,125 @@ id type
     const doc = parse(backToIson);
 
     expect(doc.getBlock("events")!.size()).toBe(2);
+  });
+});
+
+// Helper: build a Document with a single block (the way this package does)
+function makeIsonlDoc(kind: string, name: string, fields: string[], rows: Row[]): Document {
+  const doc = new Document();
+  const block = new Block(kind, name);
+  block.fields = [...fields];
+  block.fieldInfo = fields.map(f => ({ name: f, type: undefined, isComputed: false }));
+  block.rows = rows;
+  doc.blocks.push(block);
+  return doc;
+}
+
+describe("ISONL Escaping Integrity", () => {
+  it("should round-trip delimiter/escape chars in values", () => {
+    const adversarial = [
+      'C:\\path\\',            // trailing backslash used to desync quote tracking
+      '\\',
+      'a\\',
+      'ends with backslash \\',
+      'pipe|inside',
+      'quote " inside',
+      'mix \\" of both',
+      'line1\nline2',
+      'tab\there',
+      'cr\rhere',
+      'crlf\r\nend',
+      '123',
+      'true',
+      ':ref',
+      '',
+      '\\|',
+      ' leading and trailing ',
+    ];
+    const doc = makeIsonlDoc(
+      'table', 'adversarial', ['v'],
+      adversarial.map(s => ({ v: s }))
+    );
+    const parsed = loadsIsonl(dumpsIsonl(doc));
+    const got = parsed.blocks[0].rows.map(r => r['v']);
+    expect(got).toEqual(adversarial);
+
+    // Compound case: a quoted value ending in an escaped backslash followed by
+    // a pipe-bearing value on the same line — the exact shape that desynced
+    // quote tracking and corrupted section splitting
+    const compoundRows = [
+      { a: 'x \\', b: 'y|z' },
+      { a: 'x\\', b: 'y|z' },
+    ];
+    const doc2 = makeIsonlDoc('table', 'compound', ['a', 'b'], compoundRows);
+    const parsed2 = loadsIsonl(dumpsIsonl(doc2));
+    expect(parsed2.blocks[0].rows).toEqual(compoundRows);
+  });
+});
+
+describe("ISONL Round-Trip Property", () => {
+  it("should round-trip random strings over a hostile alphabet", () => {
+    // Deterministic LCG (no Math.random)
+    let state = 20260713;
+    const nextState = (): number => {
+      state = (state * 1103515245 + 12345) % 2147483648;
+      return state;
+    };
+    const randInt = (lo: number, hi: number): number => lo + (nextState() % (hi - lo + 1));
+
+    const alphabet = ['a', 'b', ' ', '|', '"', '\\', '\n', '\r', '\t', '.', ':', '#', '0', '1', 'true', 'null'];
+
+    for (let trial = 0; trial < 300; trial++) {
+      const numFields = randInt(1, 4);
+      const fields = Array.from({ length: numFields }, (_, i) => `f${i}`);
+      const rows: Row[] = [];
+      const numRows = randInt(1, 3);
+      for (let r = 0; r < numRows; r++) {
+        const row: Row = {};
+        for (const f of fields) {
+          const len = randInt(0, 12);
+          let value = '';
+          for (let c = 0; c < len; c++) {
+            value += alphabet[randInt(0, alphabet.length - 1)];
+          }
+          row[f] = value;
+        }
+        rows.push(row);
+      }
+
+      const doc = makeIsonlDoc('table', 't', fields, rows);
+      const out = dumpsIsonl(doc);
+      const parsed = loadsIsonl(out);
+      expect(parsed.blocks[0].rows, `trial ${trial}: ${JSON.stringify(rows)} -> ${JSON.stringify(out)}`).toEqual(rows);
+    }
+  });
+});
+
+describe("ISONL Envelope Validation", () => {
+  const makeDoc = (opts: { kind?: string; name?: string; fields?: string[] } = {}): Document => {
+    const { kind = 'table', name = 't', fields = ['id'] } = opts;
+    const row: Row = {};
+    for (const f of fields) row[f] = 1;
+    return makeIsonlDoc(kind, name, fields, [row]);
+  };
+
+  it("should reject envelopes that cannot survive a round-trip", () => {
+    const badCases: Array<{ kind?: string; name?: string; fields?: string[] }> = [
+      { kind: 'ta|ble' }, { kind: 'ta ble' }, { kind: 't.able' },
+      { kind: '#table' }, { kind: '' },
+      { name: 'na|me' }, { name: 'na\nme' }, { name: 'na me' }, { name: '' },
+      { fields: ['bad field'] }, { fields: ['bad|field'] }, { fields: [''] },
+    ];
+    for (const kwargs of badCases) {
+      expect(() => dumpsIsonl(makeDoc(kwargs)), `should have rejected envelope ${JSON.stringify(kwargs)}`)
+        .toThrow(ISONSyntaxError);
+    }
+  });
+
+  it("should allow dots in the block name (split on first dot)", () => {
+    const parsed = loadsIsonl(dumpsIsonl(makeDoc({ name: 'v1.2' })));
+    expect(parsed.blocks[0].kind).toBe('table');
+    expect(parsed.blocks[0].name).toBe('v1.2');
   });
 });
 

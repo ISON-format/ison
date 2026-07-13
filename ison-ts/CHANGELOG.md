@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.2] - 2026-07-13
+
+### Fixed
+- **ISONL Round-Trip Corruption**: Values containing trailing backslashes (`"x \\"`), carriage returns, pipes, or quote/escape combinations now survive `dumpsIsonl()` → `loadsIsonl()` unchanged. Pipe-splitting is now quote- and escape-aware, the serializer quotes and escapes `\r`, `\\`, `\|`, and empty strings, and quoted tokens are no longer re-interpreted as numbers/booleans/nulls/references (so the string `"123"` stays a string)
+- **ISONL Envelope Validation**: `dumpsIsonl()` now throws `ISONSyntaxError` for block kinds, names, or field names that cannot be serialized (containing pipe, quote, backslash, or whitespace; empty; kind containing `.` or starting with `#`) instead of silently emitting corrupt output. Dots in block names remain legal (header splits on the first dot)
+
 ## [1.0.1] - 2025-12-29
 
 ### Changed

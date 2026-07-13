@@ -38,11 +38,11 @@
   "author": "Mahesh Vaikri",
   "license": "MIT",
   "peerDependencies": {
-    "ison-ts": ">=1.0.0"
+    "ison-ts": ">=1.0.2"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "ison-ts": "^1.0.0",
+    "ison-ts": "^1.0.2",
     "tsup": "^8.0.0",
     "typescript": "^5.0.0",
     "vitest": "^1.0.0"
@@ -52,10 +52,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/maheshvaikri-code/ison.git"
+    "url": "git+https://github.com/ISON-format/ison.git"
   },
   "bugs": {
-    "url": "https://github.com/maheshvaikri-code/ison/issues"
+    "url": "https://github.com/ISON-format/ison/issues"
   },
   "homepage": "https://www.ison.dev"
 }

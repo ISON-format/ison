@@ -642,6 +642,140 @@ test('test_isonl_stream', () => {
     assertEqual(records[2].values.name, 'Charlie');
 });
 
+test('test_isonl_escaping_integrity', () => {
+    // Regression: delimiter/escape chars in values must survive a round-trip
+    const adversarial = [
+        'C:\\path\\',            // trailing backslash used to desync quote tracking
+        '\\',
+        'a\\',
+        'ends with backslash \\',
+        'pipe|inside',
+        'quote " inside',
+        'mix \\" of both',
+        'line1\nline2',
+        'tab\there',
+        'cr\rhere',
+        'crlf\r\nend',
+        '123',
+        'true',
+        ':ref',
+        '',
+        '\\|',
+        ' leading and trailing '
+    ];
+
+    let doc = new ISON.Document();
+    doc.blocks.push(new ISON.Block(
+        'table', 'adversarial', ['v'],
+        adversarial.map(s => ({ v: s }))
+    ));
+    let parsed = ISON.loadsISONL(ISON.dumpsISONL(doc));
+    const got = parsed.blocks[0].rows.map(r => r.v);
+    assertEqual(
+        JSON.stringify(got),
+        JSON.stringify(adversarial),
+        'round-trip corrupted values'
+    );
+
+    // Compound case: a quoted value ending in an escaped backslash followed by
+    // a pipe-bearing value on the same line — the exact shape that desynced
+    // quote tracking and corrupted section splitting
+    const compoundRows = [
+        { a: 'x \\', b: 'y|z' },
+        { a: 'x\\', b: 'y|z' }
+    ];
+    doc = new ISON.Document();
+    doc.blocks.push(new ISON.Block('table', 'compound', ['a', 'b'], compoundRows));
+    parsed = ISON.loadsISONL(ISON.dumpsISONL(doc));
+    assertEqual(
+        JSON.stringify(parsed.blocks[0].rows),
+        JSON.stringify(compoundRows),
+        'compound round-trip corrupted rows'
+    );
+});
+
+test('test_isonl_roundtrip_property', () => {
+    // Property test: random strings over a hostile alphabet must round-trip.
+    // Deterministic LCG (state = (state * 1103515245 + 12345) % 2^31) computed
+    // with BigInt so the multiply stays exact and trials are reproducible.
+    let state = 20260713n;
+    const nextState = () => {
+        state = (state * 1103515245n + 12345n) % 2147483648n;
+        return Number(state);
+    };
+    const randInt = (lo, hi) => lo + (nextState() % (hi - lo + 1));
+
+    const alphabet = ['a', 'b', ' ', '|', '"', '\\', '\n', '\r', '\t', '.', ':', '#', '0', '1', 'true', 'null'];
+
+    for (let trial = 0; trial < 300; trial++) {
+        const fields = [];
+        const numFields = randInt(1, 4);
+        for (let i = 0; i < numFields; i++) {
+            fields.push(`f${i}`);
+        }
+
+        const rows = [];
+        const numRows = randInt(1, 3);
+        for (let r = 0; r < numRows; r++) {
+            const row = {};
+            for (const field of fields) {
+                const parts = [];
+                const numParts = randInt(0, 12);
+                for (let p = 0; p < numParts; p++) {
+                    parts.push(alphabet[randInt(0, alphabet.length - 1)]);
+                }
+                row[field] = parts.join('');
+            }
+            rows.push(row);
+        }
+
+        const doc = new ISON.Document();
+        doc.blocks.push(new ISON.Block('table', 't', fields, rows));
+        const out = ISON.dumpsISONL(doc);
+        const parsed = ISON.loadsISONL(out);
+        assertEqual(
+            JSON.stringify(parsed.blocks[0].rows),
+            JSON.stringify(rows),
+            `trial ${trial}: ${JSON.stringify(out)}`
+        );
+    }
+});
+
+test('test_isonl_envelope_validation', () => {
+    // Envelope values that can't be serialized must be rejected, not corrupted
+    const makeDoc = ({ kind = 'table', name = 't', fields = ['id'] } = {}) => {
+        const doc = new ISON.Document();
+        const row = {};
+        for (const f of fields) {
+            row[f] = 1;
+        }
+        doc.blocks.push(new ISON.Block(kind, name, fields, [row]));
+        return doc;
+    };
+
+    const badCases = [
+        { kind: 'ta|ble' }, { kind: 'ta ble' }, { kind: 't.able' },
+        { kind: '#table' }, { kind: '' },
+        { name: 'na|me' }, { name: 'na\nme' }, { name: 'na me' }, { name: '' },
+        { fields: ['bad field'] }, { fields: ['bad|field'] }, { fields: [''] }
+    ];
+    for (const kwargs of badCases) {
+        let threw = false;
+        try {
+            ISON.dumpsISONL(makeDoc(kwargs));
+        } catch (e) {
+            threw = true;
+            assert(e instanceof ISON.ISONError, `expected ISONError for envelope ${JSON.stringify(kwargs)}, got ${e.name}`);
+        }
+        assert(threw, `should have rejected envelope ${JSON.stringify(kwargs)}`);
+    }
+
+    // Dots in the block NAME are legal — the parser splits on the first dot
+    const parsed = ISON.loadsISONL(ISON.dumpsISONL(makeDoc({ name: 'v1.2' })));
+    assertEqual(parsed.blocks[0].kind, 'table');
+    assertEqual(parsed.blocks[0].name, 'v1.2');
+});
+
 // =============================================================================
 // Run Tests
 // =============================================================================

@@ -275,7 +275,7 @@ Total 100                      # Summary row
 ## Links
 
 - [Documentation](https://www.ison.dev) | [www.getison.com](https://www.getison.com)
-- [GitHub](https://github.com/maheshvaikri-code/ison)
+- [GitHub](https://github.com/ISON-format/ison)
 
 ## Author
 

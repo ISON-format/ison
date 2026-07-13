@@ -1,11 +1,11 @@
 [package]
 name = "ison-rs"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 authors = ["Mahesh Vaikri"]
 description = "ISON (Interchange Simple Object Notation) parser for Rust - A token-efficient data format for AI/LLM workflows"
 license = "MIT"
-repository = "https://github.com/maheshvaikri-code/ison"
+repository = "https://github.com/ISON-format/ison"
 homepage = "https://www.ison.dev"
 documentation = "https://docs.rs/ison-rs"
 readme = "README.md"

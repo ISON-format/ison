@@ -39,7 +39,7 @@ export {
     isonlStream,
 };
 
-export const version = '1.0.1';
+export const version = '1.0.2';
 
 export default {
     Reference,
@@ -61,7 +61,7 @@ export default {
     isonToISONL,
     isonlToISON,
     isonlStream,
-    version: '1.0.1'
+    version: '1.0.2'
 };
 `;
 

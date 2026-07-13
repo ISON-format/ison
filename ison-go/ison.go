@@ -15,7 +15,7 @@ import (
 )
 
 // Version is the current version of the ison-go package
-const Version = "1.0.0"
+const Version = "1.0.1"
 
 // ValueType represents the type of an ISON value
 type ValueType int
@@ -546,10 +546,27 @@ func parseFieldDef(field string) (name, typeHint string) {
 }
 
 func tokenizeLine(line string) []string {
+	tokens, _ := tokenizeLineWithQuotes(line)
+	return tokens
+}
+
+// tokenizeLineWithQuotes tokenizes a line and also reports, per token, whether
+// it was quoted. Quoting information lets the ISONL parser keep quoted tokens
+// like "123" or "true" as strings instead of re-inferring their type.
+func tokenizeLineWithQuotes(line string) ([]string, []bool) {
 	tokens := []string{}
+	quoted := []bool{}
 	current := strings.Builder{}
 	inQuotes := false
 	escaped := false
+	tokenQuoted := false
+
+	flush := func() {
+		tokens = append(tokens, current.String())
+		quoted = append(quoted, tokenQuoted)
+		current.Reset()
+		tokenQuoted = false
+	}
 
 	for i := 0; i < len(line); i++ {
 		ch := line[i]
@@ -560,10 +577,14 @@ func tokenizeLine(line string) []string {
 				current.WriteByte('\n')
 			case 't':
 				current.WriteByte('\t')
+			case 'r':
+				current.WriteByte('\r')
 			case '"':
 				current.WriteByte('"')
 			case '\\':
 				current.WriteByte('\\')
+			case '|':
+				current.WriteByte('|')
 			default:
 				current.WriteByte(ch)
 			}
@@ -578,13 +599,13 @@ func tokenizeLine(line string) []string {
 
 		if ch == '"' {
 			inQuotes = !inQuotes
+			tokenQuoted = true
 			continue
 		}
 
 		if !inQuotes && (ch == ' ' || ch == '\t') {
-			if current.Len() > 0 {
-				tokens = append(tokens, current.String())
-				current.Reset()
+			if tokenQuoted || current.Len() > 0 {
+				flush()
 			}
 			continue
 		}
@@ -592,11 +613,11 @@ func tokenizeLine(line string) []string {
 		current.WriteByte(ch)
 	}
 
-	if current.Len() > 0 {
-		tokens = append(tokens, current.String())
+	if tokenQuoted || current.Len() > 0 {
+		flush()
 	}
 
-	return tokens
+	return tokens, quoted
 }
 
 var refPattern = regexp.MustCompile(`^:([A-Z_]+):(.+)$|^:([a-z_][a-z0-9_]*):(.+)$|^:(.+)$`)
@@ -790,12 +811,94 @@ func padRight(s string, width int) string {
 	return s + strings.Repeat(" ", width-len(s))
 }
 
-// DumpsISONL serializes a Document to ISONL (line-based streaming format)
-func DumpsISONL(doc *Document) string {
+// isonlEnvelopeForbidden lists the characters that would corrupt the line
+// structure if they appeared raw in the envelope (kind, name, or field names).
+const isonlEnvelopeForbidden = "|\"\\ \t\n\r"
+
+// validateISONLEnvelope rejects kind/name/fields that cannot survive an ISONL
+// round-trip. Values are escaped, but the envelope is written raw, so it must
+// be free of delimiters and whitespace.
+func validateISONLEnvelope(block *Block) error {
+	for _, part := range []struct{ label, value string }{
+		{"kind", block.Kind},
+		{"name", block.Name},
+	} {
+		if part.value == "" {
+			return fmt.Errorf("ISONL block %s must be non-empty", part.label)
+		}
+		if strings.ContainsAny(part.value, isonlEnvelopeForbidden) {
+			return fmt.Errorf("ISONL block %s %q contains characters that cannot be serialized (pipe, quote, backslash, or whitespace)", part.label, part.value)
+		}
+	}
+	if strings.Contains(block.Kind, ".") {
+		return fmt.Errorf("ISONL block kind %q must not contain '.'", block.Kind)
+	}
+	if strings.HasPrefix(block.Kind, "#") {
+		return fmt.Errorf("ISONL block kind %q must not start with '#'", block.Kind)
+	}
+	for _, field := range block.Fields {
+		if field.Name == "" {
+			return fmt.Errorf("ISONL field names must be non-empty")
+		}
+		if strings.ContainsAny(field.Name, isonlEnvelopeForbidden) {
+			return fmt.Errorf("ISONL field name %q contains characters that cannot be serialized (pipe, quote, backslash, or whitespace)", field.Name)
+		}
+	}
+	return nil
+}
+
+// valueToISONL converts a Value to its ISONL string representation. Unlike
+// Value.ToISON, string values are quoted whenever they could be misparsed on
+// the way back in (pipes, backslashes, CR, keywords, number-like, etc.).
+func valueToISONL(v Value) string {
+	if v.Type == TypeString {
+		return quoteISONLIfNeeded(v.StringVal)
+	}
+	return v.ToISON()
+}
+
+// quoteISONLIfNeeded quotes and escapes a string for ISONL output if leaving
+// it bare would corrupt the line structure or change its parsed type.
+func quoteISONLIfNeeded(s string) string {
+	if s == "" {
+		return `""`
+	}
+
+	needsQuote := strings.ContainsAny(s, " \t\"\n\r\\|") ||
+		s == "true" || s == "false" || s == "null" ||
+		s == "TRUE" || s == "FALSE" || s == "NULL" || s == "~" ||
+		strings.HasPrefix(s, ":")
+	if !needsQuote {
+		// Number-like strings must stay strings after re-parsing
+		if _, err := strconv.ParseFloat(s, 64); err == nil {
+			needsQuote = true
+		}
+	}
+	if !needsQuote {
+		return s
+	}
+
+	escaped := strings.ReplaceAll(s, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+	escaped = strings.ReplaceAll(escaped, "\n", "\\n")
+	escaped = strings.ReplaceAll(escaped, "\t", "\\t")
+	escaped = strings.ReplaceAll(escaped, "\r", "\\r")
+	escaped = strings.ReplaceAll(escaped, "|", "\\|")
+	return "\"" + escaped + "\""
+}
+
+// DumpsISONL serializes a Document to ISONL (line-based streaming format).
+// It returns an error if any block's kind, name, or field names contain
+// characters that cannot survive an ISONL round-trip.
+func DumpsISONL(doc *Document) (string, error) {
 	var sb strings.Builder
 
 	for _, name := range doc.Order {
 		block := doc.Blocks[name]
+
+		if err := validateISONLEnvelope(block); err != nil {
+			return "", err
+		}
 
 		// Build field header
 		fieldHeader := strings.Builder{}
@@ -819,7 +922,7 @@ func DumpsISONL(doc *Document) string {
 					sb.WriteString(" ")
 				}
 				if val, ok := row[field.Name]; ok {
-					sb.WriteString(val.ToISON())
+					sb.WriteString(valueToISONL(val))
 				} else {
 					sb.WriteString("~")
 				}
@@ -828,7 +931,54 @@ func DumpsISONL(doc *Document) string {
 		}
 	}
 
-	return sb.String()
+	return sb.String(), nil
+}
+
+// splitISONLSections splits an ISONL line on unquoted pipe characters.
+// Inside quotes a backslash consumes the following byte as an escape pair, so
+// a value ending in an escaped backslash ("x \\") cannot desync the quote
+// tracking and let a later pipe split in the wrong place.
+func splitISONLSections(line string) []string {
+	sections := []string{}
+	current := strings.Builder{}
+	inQuotes := false
+
+	for i := 0; i < len(line); {
+		ch := line[i]
+
+		if inQuotes && ch == '\\' && i+1 < len(line) {
+			// Consume the escape pair verbatim
+			current.WriteByte(ch)
+			current.WriteByte(line[i+1])
+			i += 2
+			continue
+		}
+
+		if ch == '"' {
+			inQuotes = !inQuotes
+			current.WriteByte(ch)
+		} else if ch == '|' && !inQuotes {
+			sections = append(sections, strings.TrimSpace(current.String()))
+			current.Reset()
+		} else {
+			current.WriteByte(ch)
+		}
+
+		i++
+	}
+
+	sections = append(sections, strings.TrimSpace(current.String()))
+	return sections
+}
+
+// parseISONLValue parses a single ISONL value token. Tokens that were quoted
+// in the source are always strings; everything else goes through the normal
+// type inference.
+func parseISONLValue(token string, wasQuoted bool, typeHint string) Value {
+	if wasQuoted {
+		return String(token)
+	}
+	return parseValue(token, typeHint)
 }
 
 // ParseISONL parses ISONL (line-based streaming format)
@@ -842,12 +992,13 @@ func ParseISONL(text string) (*Document, error) {
 			continue
 		}
 
-		parts := strings.SplitN(line, "|", 3)
+		parts := splitISONLSections(line)
 		if len(parts) != 3 {
 			continue
 		}
 
-		// Parse block header
+		// Parse block header (kind.name — name may itself contain dots,
+		// so split on the first dot only)
 		header := parts[0]
 		headerParts := strings.SplitN(header, ".", 2)
 		if len(headerParts) != 2 {
@@ -871,12 +1022,12 @@ func ParseISONL(text string) (*Document, error) {
 		}
 
 		// Parse row
-		tokens := tokenizeLine(parts[2])
+		tokens, quotedFlags := tokenizeLineWithQuotes(parts[2])
 		row := make(Row)
 		for i, token := range tokens {
 			if i < len(block.Fields) {
 				fieldInfo := block.Fields[i]
-				value := parseValue(token, fieldInfo.TypeHint)
+				value := parseISONLValue(token, quotedFlags[i], fieldInfo.TypeHint)
 				row[fieldInfo.Name] = value
 			}
 		}
@@ -897,7 +1048,10 @@ func LoadISONL(path string) (*Document, error) {
 
 // DumpISONL serializes a Document and writes it to an ISONL file
 func DumpISONL(doc *Document, path string) error {
-	text := DumpsISONL(doc)
+	text, err := DumpsISONL(doc)
+	if err != nil {
+		return err
+	}
 	return os.WriteFile(path, []byte(text), 0644)
 }
 
@@ -907,7 +1061,7 @@ func ISONToISONL(isonText string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return DumpsISONL(doc), nil
+	return DumpsISONL(doc)
 }
 
 // ISONLToISON converts ISONL format to ISON format
@@ -939,7 +1093,7 @@ func ISONLStream(reader io.Reader) <-chan ISONLRecord {
 				continue
 			}
 
-			parts := strings.SplitN(line, "|", 3)
+			parts := splitISONLSections(line)
 			if len(parts) != 3 {
 				continue
 			}
@@ -962,11 +1116,11 @@ func ISONLStream(reader io.Reader) <-chan ISONLRecord {
 			}
 
 			// Parse row
-			tokens := tokenizeLine(parts[2])
+			tokens, quotedFlags := tokenizeLineWithQuotes(parts[2])
 			values := make(map[string]Value)
 			for i, token := range tokens {
 				if i < len(fields) {
-					value := parseValue(token, fieldTypes[i])
+					value := parseISONLValue(token, quotedFlags[i], fieldTypes[i])
 					values[fields[i]] = value
 				}
 			}
@@ -1050,6 +1204,7 @@ func FromJSON(jsonText string) (*Document, error) {
 type FromDictOptions struct {
 	AutoRefs   bool // Auto-detect and convert foreign keys to References
 	SmartOrder bool // Reorder columns for optimal LLM comprehension
+	Flatten    bool // Flatten nested objects into separate tables (default: true)
 }
 
 // DefaultFromDictOptions returns default FromDict options
@@ -1057,6 +1212,7 @@ func DefaultFromDictOptions() FromDictOptions {
 	return FromDictOptions{
 		AutoRefs:   false,
 		SmartOrder: false,
+		Flatten:    true,
 	}
 }
 
@@ -1096,9 +1252,54 @@ func FromDict(data map[string]interface{}) *Document {
 	return FromDictWithOptions(data, DefaultFromDictOptions())
 }
 
+// isNestedObject checks if value is a nested object (map, not nil)
+func isNestedObject(val interface{}) bool {
+	if val == nil {
+		return false
+	}
+	_, ok := val.(map[string]interface{})
+	return ok
+}
+
+// isArrayOfObjects checks if value is an array of objects
+func isArrayOfObjects(val interface{}) bool {
+	arr, ok := val.([]interface{})
+	if !ok || len(arr) == 0 {
+		return false
+	}
+	_, isMap := arr[0].(map[string]interface{})
+	return isMap
+}
+
+// isArrayOfPrimitives checks if value is an array of primitives
+func isArrayOfPrimitives(val interface{}) bool {
+	arr, ok := val.([]interface{})
+	if !ok {
+		return false
+	}
+	if len(arr) == 0 {
+		return true
+	}
+	_, isMap := arr[0].(map[string]interface{})
+	_, isArr := arr[0].([]interface{})
+	return !isMap && !isArr
+}
+
+// isArrayOfArrays checks if value is an array of arrays
+func isArrayOfArrays(val interface{}) bool {
+	arr, ok := val.([]interface{})
+	if !ok || len(arr) == 0 {
+		return false
+	}
+	_, isArr := arr[0].([]interface{})
+	return isArr
+}
+
 // FromDictWithOptions creates an ISON Document from a map with options
 func FromDictWithOptions(data map[string]interface{}, opts FromDictOptions) *Document {
 	doc := NewDocument()
+	extraBlocks := []*Block{}
+	refCounter := 1
 
 	// Collect all table names for reference detection
 	tableNames := make(map[string]bool)
@@ -1131,6 +1332,135 @@ func FromDictWithOptions(data map[string]interface{}, opts FromDictOptions) *Doc
 		}
 	}
 
+	// Helper to add to extra blocks
+	addToExtraBlock := func(blockName, blockKind string, fields []string, row Row) {
+		var existingBlock *Block
+		for _, b := range extraBlocks {
+			if b.Name == blockName {
+				existingBlock = b
+				break
+			}
+		}
+
+		if existingBlock != nil {
+			// Add new fields if they don't exist
+			existingFieldSet := make(map[string]bool)
+			for _, f := range existingBlock.Fields {
+				existingFieldSet[f.Name] = true
+			}
+			for _, k := range fields {
+				if !existingFieldSet[k] {
+					existingBlock.AddField(k, "")
+				}
+			}
+			existingBlock.AddRow(row)
+		} else {
+			block := NewBlock(blockKind, blockName)
+			for _, f := range fields {
+				block.AddField(f, "")
+			}
+			block.AddRow(row)
+			extraBlocks = append(extraBlocks, block)
+		}
+	}
+
+	// Recursive flatten helper
+	var flattenValue func(key string, value interface{}, parentName string, rowID interface{}, parentRef Reference)
+	flattenValue = func(key string, value interface{}, parentName string, rowID interface{}, parentRef Reference) {
+		nestedName := fmt.Sprintf("%s_%s", parentName, key)
+
+		if isNestedObject(value) {
+			// Nested object - create separate block and recurse
+			nestedRow := make(Row)
+			nestedRow[fmt.Sprintf("%s_id", parentName)] = Ref(parentRef)
+			nestedFields := []string{fmt.Sprintf("%s_id", parentName)}
+
+			for nk, nv := range value.(map[string]interface{}) {
+				if isNestedObject(nv) || isArrayOfObjects(nv) || isArrayOfPrimitives(nv) {
+					flattenValue(nk, nv, nestedName, rowID, parentRef)
+				} else {
+					nestedRow[nk] = interfaceToValue(nv)
+					nestedFields = append(nestedFields, nk)
+				}
+			}
+
+			if len(nestedRow) > 1 {
+				addToExtraBlock(nestedName, "table", nestedFields, nestedRow)
+			}
+
+		} else if isArrayOfObjects(value) {
+			// Array of objects - create separate table
+			for _, item := range value.([]interface{}) {
+				itemMap := item.(map[string]interface{})
+				nestedRow := make(Row)
+				nestedRow[fmt.Sprintf("%s_id", parentName)] = Ref(parentRef)
+				nestedFields := []string{fmt.Sprintf("%s_id", parentName)}
+
+				for nk, nv := range itemMap {
+					if isNestedObject(nv) || isArrayOfObjects(nv) || isArrayOfPrimitives(nv) {
+						flattenValue(nk, nv, nestedName, rowID, parentRef)
+					} else {
+						nestedRow[nk] = interfaceToValue(nv)
+						found := false
+						for _, f := range nestedFields {
+							if f == nk {
+								found = true
+								break
+							}
+						}
+						if !found {
+							nestedFields = append(nestedFields, nk)
+						}
+					}
+				}
+
+				if len(nestedRow) > 1 {
+					addToExtraBlock(nestedName, "table", nestedFields, nestedRow)
+				}
+			}
+
+		} else if isArrayOfPrimitives(value) {
+			// Array of primitives - create separate table with value column
+			for _, item := range value.([]interface{}) {
+				nestedRow := make(Row)
+				nestedRow[fmt.Sprintf("%s_id", parentName)] = Ref(parentRef)
+				nestedRow["value"] = interfaceToValue(item)
+				addToExtraBlock(nestedName, "table", []string{fmt.Sprintf("%s_id", parentName), "value"}, nestedRow)
+			}
+		}
+	}
+
+	// Flatten a row
+	flattenRow := func(rowData map[string]interface{}, parentName string, rowID interface{}) Row {
+		flatRow := make(Row)
+		parentRef := Reference{ID: fmt.Sprintf("%v", rowID)}
+
+		for key, value := range rowData {
+			if opts.Flatten && (isNestedObject(value) || isArrayOfObjects(value) || isArrayOfPrimitives(value)) {
+				flattenValue(key, value, parentName, rowID, parentRef)
+				// Skip - field is flattened to separate table
+			} else if value == nil {
+				flatRow[key] = Null()
+			} else if opts.AutoRefs {
+				// Check if this is a reference field
+				if refType, isRef := refFields[key]; isRef {
+					switch refVal := value.(type) {
+					case int, int64, float64, string:
+						flatRow[key] = Ref(Reference{ID: fmt.Sprintf("%v", refVal), Namespace: refType})
+						continue
+					default:
+						_ = refVal
+					}
+				}
+				flatRow[key] = interfaceToValue(value)
+			} else {
+				flatRow[key] = interfaceToValue(value)
+			}
+		}
+
+		return flatRow
+	}
+
 	// Sort table names for consistent ordering
 	names := make([]string, 0, len(data))
 	for name := range data {
@@ -1142,20 +1472,65 @@ func FromDictWithOptions(data map[string]interface{}, opts FromDictOptions) *Doc
 		content := data[name]
 		switch v := content.(type) {
 		case []interface{}:
-			// Table with multiple rows
-			if len(v) > 0 {
+			if isArrayOfArrays(content) {
+				// Array of arrays - create table with generated column names
+				maxCols := 0
+				for _, row := range v {
+					if arr, ok := row.([]interface{}); ok && len(arr) > maxCols {
+						maxCols = len(arr)
+					}
+				}
+
+				block := NewBlock("table", name)
+				for i := 0; i < maxCols; i++ {
+					block.AddField(fmt.Sprintf("col%d", i+1), "")
+				}
+
+				for _, item := range v {
+					if arr, ok := item.([]interface{}); ok {
+						row := make(Row)
+						for i := 0; i < maxCols; i++ {
+							fieldName := fmt.Sprintf("col%d", i+1)
+							if i < len(arr) {
+								row[fieldName] = interfaceToValue(arr[i])
+							} else {
+								row[fieldName] = Null()
+							}
+						}
+						block.AddRow(row)
+					}
+				}
+
+				doc.AddBlock(block)
+
+			} else if len(v) > 0 {
 				if _, ok := v[0].(map[string]interface{}); ok {
-					// Collect all unique fields
+					// Collect all unique fields from flattened rows
 					fieldSet := make(map[string]bool)
 					fieldOrder := []string{}
+					processedRows := []Row{}
+
 					for _, item := range v {
-						if row, ok := item.(map[string]interface{}); ok {
-							for key := range row {
+						if rowData, ok := item.(map[string]interface{}); ok {
+							// Determine row ID
+							var rowID interface{}
+							if id, hasID := rowData["id"]; hasID {
+								rowID = id
+							} else {
+								rowID = refCounter
+								refCounter++
+							}
+
+							// Flatten the row
+							flatRow := flattenRow(rowData, name, rowID)
+
+							for key := range flatRow {
 								if !fieldSet[key] {
 									fieldSet[key] = true
 									fieldOrder = append(fieldOrder, key)
 								}
 							}
+							processedRows = append(processedRows, flatRow)
 						}
 					}
 
@@ -1169,52 +1544,56 @@ func FromDictWithOptions(data map[string]interface{}, opts FromDictOptions) *Doc
 						block.AddField(field, "")
 					}
 
-					// Convert rows with references if auto_refs
-					for _, item := range v {
-						if rowData, ok := item.(map[string]interface{}); ok {
-							row := make(Row)
-							for key, val := range rowData {
-								if opts.AutoRefs {
-									if refType, isRef := refFields[key]; isRef {
-										switch refVal := val.(type) {
-										case int, int64, float64, string:
-											row[key] = Ref(Reference{ID: fmt.Sprintf("%v", refVal), Namespace: refType})
-											continue
-										default:
-											_ = refVal // suppress unused warning
-										}
-									}
-								}
-								row[key] = interfaceToValue(val)
-							}
-							block.AddRow(row)
-						}
+					for _, row := range processedRows {
+						block.AddRow(row)
 					}
 
+					doc.AddBlock(block)
+
+				} else {
+					// Array of primitives - create simple table
+					block := NewBlock("table", name)
+					block.AddField("value", "")
+					for _, item := range v {
+						row := make(Row)
+						row["value"] = interfaceToValue(item)
+						block.AddRow(row)
+					}
 					doc.AddBlock(block)
 				}
 			}
 
 		case map[string]interface{}:
 			// Single object = object block
-			block := NewBlock("object", name)
-			fields := make([]string, 0, len(v))
-			for key := range v {
+			var rowID interface{}
+			if id, hasID := v["id"]; hasID {
+				rowID = id
+			} else {
+				rowID = name
+			}
+
+			flatRow := flattenRow(v, name, rowID)
+
+			fields := make([]string, 0, len(flatRow))
+			for key := range flatRow {
 				fields = append(fields, key)
 			}
 			if opts.SmartOrder {
 				fields = smartOrderFields(fields)
 			}
+
+			block := NewBlock("object", name)
 			for _, key := range fields {
 				block.AddField(key, "")
 			}
-			row := make(Row)
-			for key, val := range v {
-				row[key] = interfaceToValue(val)
-			}
-			block.AddRow(row)
+			block.AddRow(flatRow)
 			doc.AddBlock(block)
 		}
+	}
+
+	// Add extra blocks from flattened nested structures
+	for _, block := range extraBlocks {
+		doc.AddBlock(block)
 	}
 
 	return doc

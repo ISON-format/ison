@@ -14,7 +14,7 @@ Tests all edge cases from the specification:
 from ison_parser import (
     loads, dumps, load, from_dict,
     Document, Block, Reference, FieldInfo,
-    ISONSyntaxError,
+    ISONError, ISONSyntaxError,
     # ISONL imports
     loads_isonl, dumps_isonl, ison_to_isonl, isonl_to_ison,
     ISONLRecord, ISONLParser
@@ -734,6 +734,113 @@ table.examples|instruction input output|"Extract entities" "Apple Inc. in Cupert
     print("[PASS] test_isonl_fine_tuning_format")
 
 
+def test_isonl_escaping_integrity():
+    """Regression: delimiter/escape chars in values must survive a round-trip"""
+    adversarial = [
+        'C:\\path\\',            # trailing backslash used to desync quote tracking
+        '\\',
+        'a\\',
+        'ends with backslash \\',
+        'pipe|inside',
+        'quote " inside',
+        'mix \\" of both',
+        'line1\nline2',
+        'tab\there',
+        'cr\rhere',
+        'crlf\r\nend',
+        '123',
+        'true',
+        ':ref',
+        '',
+        '\\|',
+        ' leading and trailing ',
+    ]
+    doc = Document()
+    doc.blocks.append(Block(
+        kind='table', name='adversarial', fields=['v'],
+        rows=[{'v': s} for s in adversarial]
+    ))
+    parsed = loads_isonl(dumps_isonl(doc))
+    got = [r['v'] for r in parsed.blocks[0].rows]
+    assert got == adversarial, f"round-trip corrupted values: {got!r}"
+
+    # Compound case: a quoted value ending in an escaped backslash followed by
+    # a pipe-bearing value on the same line — the exact shape that desynced
+    # quote tracking and corrupted section splitting
+    compound_rows = [
+        {'a': 'x \\', 'b': 'y|z'},
+        {'a': 'x\\', 'b': 'y|z'},
+    ]
+    doc = Document()
+    doc.blocks.append(Block(
+        kind='table', name='compound', fields=['a', 'b'],
+        rows=compound_rows
+    ))
+    parsed = loads_isonl(dumps_isonl(doc))
+    assert parsed.blocks[0].rows == compound_rows
+
+    print("[PASS] test_isonl_escaping_integrity")
+
+
+def test_isonl_roundtrip_property():
+    """Property test: random strings over a hostile alphabet must round-trip"""
+    import random
+    rng = random.Random(20260713)
+    alphabet = list('ab |"\\\n\r\t.:#01') + ['true', 'null']
+
+    for trial in range(300):
+        fields = [f'f{i}' for i in range(rng.randint(1, 4))]
+        rows = []
+        for _ in range(rng.randint(1, 3)):
+            row = {}
+            for f in fields:
+                row[f] = ''.join(
+                    rng.choice(alphabet) for _ in range(rng.randint(0, 12))
+                )
+            rows.append(row)
+
+        doc = Document()
+        doc.blocks.append(Block(kind='table', name='t', fields=fields, rows=rows))
+        out = dumps_isonl(doc)
+        parsed = loads_isonl(out)
+        assert parsed.blocks[0].rows == rows, (
+            f"trial {trial}: {rows!r} -> {out!r} -> {parsed.blocks[0].rows!r}"
+        )
+
+    print("[PASS] test_isonl_roundtrip_property")
+
+
+def test_isonl_envelope_validation():
+    """Envelope values that can't be serialized must be rejected, not corrupted"""
+    def make_doc(kind='table', name='t', fields=('id',)):
+        doc = Document()
+        doc.blocks.append(Block(
+            kind=kind, name=name, fields=list(fields),
+            rows=[{f: 1 for f in fields}]
+        ))
+        return doc
+
+    bad_cases = [
+        dict(kind='ta|ble'), dict(kind='ta ble'), dict(kind='t.able'),
+        dict(kind='#table'), dict(kind=''),
+        dict(name='na|me'), dict(name='na\nme'), dict(name='na me'), dict(name=''),
+        dict(fields=('bad field',)), dict(fields=('bad|field',)), dict(fields=('',)),
+    ]
+    for kwargs in bad_cases:
+        try:
+            dumps_isonl(make_doc(**kwargs))
+            assert False, f"should have rejected envelope {kwargs}"
+        except ISONError:
+            pass
+
+    # Dots in the block NAME are legal — the parser splits on the first dot
+    parsed = loads_isonl(dumps_isonl(make_doc(name='v1.2')))
+    assert parsed.blocks[0].kind == 'table'
+    assert parsed.blocks[0].name == 'v1.2'
+
+    print("[PASS] test_isonl_envelope_validation")
+
+
 def run_all_tests():
     """Run all tests"""
     print("Running ISON v1.0 Parser Tests\n" + "=" * 40)
@@ -776,6 +883,9 @@ def run_all_tests():
     test_isonl_quoted_pipes()
     test_isonl_error_handling()
     test_isonl_fine_tuning_format()
+    test_isonl_escaping_integrity()
+    test_isonl_roundtrip_property()
+    test_isonl_envelope_validation()
 
     print("\n" + "=" * 40)
     print("All tests passed!")

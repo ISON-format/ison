@@ -1,10 +1,10 @@
-
 <p align="center">
-  <img src="https://raw.githubusercontent.com/maheshvaikri-code/ison/main/images/ison_logo_git.png" alt="ISON Logo">
+  <img src="https://raw.githubusercontent.com/ISON-format/ison/main/images/ison_logo_git.png" alt="ISON Logo">
 </p>
 
-
 # isonantic-cpp
+
+> **Note:** For Python, TypeScript, and Go, validation has been merged into the main parser packages. For C++, isonantic-cpp remains a separate header-only library.
 
 Type-safe validation for ISON format in C++17.
 
@@ -169,7 +169,7 @@ const auto& first = users[0];
 ## Links
 
 - [Documentation](https://www.ison.dev) | [www.getison.com](https://www.getison.com)
-- [GitHub](https://github.com/maheshvaikri-code/ison)
+- [GitHub](https://github.com/ISON-format/ison)
 
 ## Author
 

@@ -31,7 +31,8 @@ function parseISON(text: string): ISONDocument {
 		if (trimmed === '---') continue;
 
 		// Block header: table.name or object.name
-		const blockMatch = trimmed.match(/^(table|object|list)\.(\w+)$/);
+		// Name comes after the first dot and may itself contain dots
+		const blockMatch = trimmed.match(/^(table|object|list)\.(\S+)$/);
 		if (blockMatch) {
 			if (currentBlock) {
 				doc.blocks.push(currentBlock);
@@ -68,6 +69,16 @@ function parseISON(text: string): ISONDocument {
 	return doc;
 }
 
+// Escape sequences recognized inside quoted strings
+const ESCAPE_MAP: Record<string, string> = {
+	'"': '"',
+	'\\': '\\',
+	n: '\n',
+	t: '\t',
+	r: '\r',
+	'|': '|',
+};
+
 function parseValues(line: string): any[] {
 	const values: any[] = [];
 	let current = '';
@@ -79,7 +90,9 @@ function parseValues(line: string): any[] {
 
 		if (inQuotes) {
 			if (char === '\\' && i + 1 < line.length) {
-				current += line[++i];
+				const next = line[++i];
+				// Unknown escapes keep the character as-is
+				current += ESCAPE_MAP[next] ?? next;
 			} else if (char === quoteChar) {
 				inQuotes = false;
 			} else {
@@ -155,7 +168,7 @@ function jsonToIson(data: Record<string, any[]>): string {
 	return lines.join('\n').trim();
 }
 
-function formatValue(value: any): string {
+function formatValue(value: any, isonl = false): string {
 	if (value === null || value === undefined) return 'null';
 	if (typeof value === 'boolean') return value.toString();
 	if (typeof value === 'number') return value.toString();
@@ -167,15 +180,78 @@ function formatValue(value: any): string {
 		return `:${value._ref}`;
 	}
 	if (typeof value === 'string') {
-		if (value.includes(' ') || value.includes('\t') || value.includes('\n')) {
-			return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`;
-		}
-		if (value === 'true' || value === 'false' || value === 'null' || value === '') {
-			return `"${value}"`;
-		}
-		return value;
+		return quoteIfNeeded(value, isonl);
 	}
-	return JSON.stringify(value);
+	return quoteIfNeeded(JSON.stringify(value), isonl);
+}
+
+function quoteIfNeeded(value: string, isonl: boolean): string {
+	if (value === '') return '""';
+
+	let needsQuote =
+		value.includes(' ') ||
+		value.includes('\t') ||
+		value.includes('"') ||
+		value.includes('\n') ||
+		value === 'true' ||
+		value === 'false' ||
+		value === 'null' ||
+		value.startsWith(':') ||
+		!isNaN(Number(value));
+
+	if (isonl) {
+		// CR, backslash, and pipe would corrupt the single-line pipe structure
+		needsQuote =
+			needsQuote || value.includes('\r') || value.includes('\\') || value.includes('|');
+	}
+
+	if (!needsQuote) return value;
+
+	let escaped = value
+		.replace(/\\/g, '\\\\')
+		.replace(/"/g, '\\"')
+		.replace(/\n/g, '\\n')
+		.replace(/\t/g, '\\t')
+		.replace(/\r/g, '\\r');
+	if (isonl) {
+		escaped = escaped.replace(/\|/g, '\\|');
+	}
+	return `"${escaped}"`;
+}
+
+function splitIsonlSections(line: string): string[] {
+	// Split on unquoted pipes, escape-aware: consume escape pairs inside quotes
+	// so an escaped backslash before a closing quote ("foo\\") cannot desync
+	// the quote tracking and let a later | split sections wrongly
+	const sections: string[] = [];
+	let current = '';
+	let inQuotes = false;
+	let i = 0;
+
+	while (i < line.length) {
+		const char = line[i];
+
+		if (inQuotes && char === '\\' && i + 1 < line.length) {
+			current += char + line[i + 1];
+			i += 2;
+			continue;
+		}
+
+		if (char === '"') {
+			inQuotes = !inQuotes;
+			current += char;
+		} else if (char === '|' && !inQuotes) {
+			sections.push(current.trim());
+			current = '';
+		} else {
+			current += char;
+		}
+
+		i++;
+	}
+
+	sections.push(current.trim());
+	return sections;
 }
 
 function parseISONL(text: string): any[] {
@@ -186,10 +262,11 @@ function parseISONL(text: string): any[] {
 		if (!trimmed || trimmed.startsWith('#')) continue;
 
 		// Format: table.name|field1 field2|value1 value2
-		const parts = trimmed.split('|');
+		const parts = splitIsonlSections(trimmed);
 		if (parts.length !== 3) continue;
 
-		const blockMatch = parts[0].match(/^(table|object|list)\.(\w+)$/);
+		// Header splits on the first dot, so block names may contain dots
+		const blockMatch = parts[0].match(/^(table|object|list)\.(.+)$/);
 		if (!blockMatch) continue;
 
 		const blockName = blockMatch[2];
@@ -207,6 +284,39 @@ function parseISONL(text: string): any[] {
 	return results;
 }
 
+// Characters that would corrupt the line structure if they appeared raw in
+// the envelope (kind, name, or field names)
+const ISONL_ENVELOPE_FORBIDDEN = /[|"\\ \t\n\r]/;
+
+function validateIsonlEnvelope(kind: string, name: string, fields: string[]): void {
+	for (const [label, value] of [['kind', kind], ['name', name]]) {
+		if (!value) {
+			throw new Error(`ISONL block ${label} must be non-empty`);
+		}
+		if (ISONL_ENVELOPE_FORBIDDEN.test(value)) {
+			throw new Error(
+				`ISONL block ${label} "${value}" contains characters that cannot be serialized (pipe, quote, backslash, or whitespace)`,
+			);
+		}
+	}
+	if (kind.includes('.')) {
+		throw new Error(`ISONL block kind "${kind}" must not contain '.'`);
+	}
+	if (kind.startsWith('#')) {
+		throw new Error(`ISONL block kind "${kind}" must not start with '#'`);
+	}
+	for (const field of fields) {
+		if (!field) {
+			throw new Error('ISONL field names must be non-empty');
+		}
+		if (ISONL_ENVELOPE_FORBIDDEN.test(field)) {
+			throw new Error(
+				`ISONL field name "${field}" contains characters that cannot be serialized (pipe, quote, backslash, or whitespace)`,
+			);
+		}
+	}
+}
+
 function jsonToIsonl(data: Record<string, any[]>): string {
 	const lines: string[] = [];
 
@@ -214,10 +324,11 @@ function jsonToIsonl(data: Record<string, any[]>): string {
 		if (!Array.isArray(records) || records.length === 0) continue;
 
 		const fields = Object.keys(records[0]);
+		validateIsonlEnvelope('table', name, fields);
 		const fieldsStr = fields.join(' ');
 
 		for (const record of records) {
-			const values = fields.map(f => formatValue(record[f]));
+			const values = fields.map(f => formatValue(record[f], true));
 			lines.push(`table.${name}|${fieldsStr}|${values.join(' ')}`);
 		}
 	}

@@ -1,15 +1,15 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/maheshvaikri-code/ison/main/images/ison_logo_git.png" alt="ISON Logo">
+  <img src="https://raw.githubusercontent.com/ISON-format/ison/main/images/ison_logo_git.png" alt="ISON Logo">
 </p>
 
 # ison-go
 
 Go parser and serializer for ISON (Interchange Simple Object Notation) - a minimal, token-efficient data format optimized for LLMs and Agentic AI workflows.
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/maheshvaikri-code/ison/ison-go.svg)](https://pkg.go.dev/github.com/maheshvaikri-code/ison/ison-go)
+[![Go Reference](https://pkg.go.dev/badge/github.com/ISON-format/ison/ison-go.svg)](https://pkg.go.dev/github.com/ISON-format/ison/ison-go)
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-40%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-40%2B%20passed-brightgreen.svg)]()
 
 ## Features
 
@@ -21,12 +21,13 @@ Go parser and serializer for ISON (Interchange Simple Object Notation) - a minim
 - **File I/O** - Load/Dump for ISON and ISONL files
 - **JSON Conversion** - Bidirectional ISON ↔ JSON conversion
 - **FromDict** - Create documents from maps with auto-refs and smart ordering
+- **Built-in Validation** - Zod-like schema validation (see below)
 - **Zero Dependencies** - Only standard library (testify for tests)
 
 ## Installation
 
 ```bash
-go get github.com/maheshvaikri-code/ison/ison-go
+go get github.com/ISON-format/ison/ison-go
 ```
 
 ## Quick Start
@@ -36,7 +37,7 @@ package main
 
 import (
     "fmt"
-    "github.com/maheshvaikri-code/ison/ison-go"
+    "github.com/ISON-format/ison/ison-go"
 )
 
 func main() {
@@ -174,8 +175,9 @@ fmt.Println(output)
 doc, _ := ison.ParseISONL(`table.users|id:int name:string|1 Alice
 table.users|id:int name:string|2 Bob`)
 
-// Serialize to ISONL
-output := ison.DumpsISONL(doc)
+// Serialize to ISONL (returns an error if a block's kind, name, or
+// field names contain characters that cannot survive a round-trip)
+output, err := ison.DumpsISONL(doc)
 ```
 
 ### JSON Conversion
@@ -311,7 +313,7 @@ output := ison.DumpsWithOptions(doc, opts)
 | `ParseISONL(text string)` | Parse ISONL streaming format |
 | `Dumps(doc *Document)` | Serialize Document to ISON |
 | `DumpsWithOptions(doc, opts)` | Serialize with custom delimiter |
-| `DumpsISONL(doc *Document)` | Serialize to ISONL format |
+| `DumpsISONL(doc *Document)` | Serialize to ISONL format (returns `(string, error)`) |
 | `Load(path string)` | Load Document from ISON file |
 | `Dump(doc, path)` | Save Document to ISON file |
 | `LoadISONL(path string)` | Load from ISONL file |
@@ -373,13 +375,59 @@ output := ison.DumpsWithOptions(doc, opts)
 ... and 12 more tests
 
 PASS
-ok      github.com/maheshvaikri-code/ison/ison-go    0.XXXs
+ok      github.com/ISON-format/ison/ison-go    0.XXXs
 ```
+
+## Built-in Validation (Zod-like)
+
+ison-go includes a built-in validation subpackage with a Zod-like API:
+
+```go
+import "github.com/ISON-format/ison/ison-go/validation"
+
+// Define schemas using the I namespace (like Zod's z)
+userSchema := validation.I.Table("users", map[string]validation.Schema{
+    "id":     validation.I.Int(),
+    "name":   validation.I.String().Min(1).Max(100),
+    "email":  validation.I.String().Email(),
+    "active": validation.I.Bool().Default(true),
+})
+
+orderSchema := validation.I.Table("orders", map[string]validation.Schema{
+    "id":      validation.I.String(),
+    "user_id": validation.I.Ref(),
+    "total":   validation.I.Number().Positive(),
+})
+
+// Create document schema
+docSchema := validation.Document(map[string]validation.Schema{
+    "users":  userSchema,
+    "orders": orderSchema,
+})
+
+// Validate
+result := docSchema.SafeParse(doc.ToDict())
+if result.Success {
+    fmt.Println("Document is valid!")
+} else {
+    fmt.Println("Errors:", result.Error)
+}
+```
+
+Features:
+- **String validation**: `Min()`, `Max()`, `Email()`, `URL()`, `Regex()`
+- **Number validation**: `Min()`, `Max()`, `Positive()`, `Negative()`
+- **Reference validation**: ISON reference support with namespace
+- **Object schemas**: With `Extend()`, `Pick()`, `Omit()`
+- **Array schemas**: With length constraints
+- **Custom refinements**: `Refine(fn, message)`
+
+> **Note:** The standalone `isonantic-go` package is deprecated. Use `ison-go/validation` instead.
 
 ## Links
 
 - [ISON Documentation](https://www.ison.dev) | [www.getison.com](https://www.getison.com)
-- [GitHub Repository](https://github.com/maheshvaikri-code/ison)
+- [GitHub Repository](https://github.com/ISON-format/ison)
 - [ISON Specification](https://www.ison.dev/spec.html)
 
 ## License

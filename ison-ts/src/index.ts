@@ -5,7 +5,7 @@
  * ISON is a minimal, LLM-friendly data serialization format optimized for AI/ML workflows.
  */
 
-export const VERSION = "1.0.1";
+export const VERSION = "1.0.2";
 
 // =============================================================================
 // Types
@@ -631,7 +631,7 @@ class ISONLParser {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#")) continue;
 
-      const parts = trimmed.split("|");
+      const parts = this.splitByPipe(trimmed);
       if (parts.length !== 3) {
         throw new ISONSyntaxError(`Invalid ISONL line: ${line}`);
       }
@@ -667,11 +667,10 @@ class ISONLParser {
       }
 
       // Parse values
-      const parser = new Parser(valuesPart);
       const values = this.tokenizeValues(valuesPart);
       const row: Row = {};
       for (let i = 0; i < block.fields.length && i < values.length; i++) {
-        row[block.fields[i]] = this.parseValue(values[i]);
+        row[block.fields[i]] = this.parseValue(values[i].token, values[i].wasQuoted);
       }
       block.rows.push(row);
     }
@@ -679,8 +678,52 @@ class ISONLParser {
     return doc;
   }
 
-  private tokenizeValues(line: string): string[] {
-    const tokens: string[] = [];
+  /**
+   * Split an ISONL line on unquoted pipes.
+   *
+   * Quote-aware AND escape-aware: while inside quotes a backslash consumes
+   * the following character as an escape pair, so a value ending in an
+   * escaped backslash ("foo\\") cannot desync the quote tracking and let a
+   * later '|' split the line in the wrong place.
+   */
+  private splitByPipe(line: string): string[] {
+    const sections: string[] = [];
+    let current = "";
+    let inQuotes = false;
+    let i = 0;
+
+    while (i < line.length) {
+      const char = line[i];
+
+      if (inQuotes && char === "\\" && i + 1 < line.length) {
+        // Consume the escape pair (both characters) so the next char is
+        // never mistaken for a closing quote
+        current += char + line[i + 1];
+        i += 2;
+        continue;
+      }
+
+      if (char === '"') {
+        inQuotes = !inQuotes;
+        current += char;
+      } else if (char === "|" && !inQuotes) {
+        sections.push(current.trim());
+        current = "";
+      } else {
+        current += char;
+      }
+
+      i++;
+    }
+
+    // Add the last section
+    sections.push(current.trim());
+
+    return sections;
+  }
+
+  private tokenizeValues(line: string): Array<{ token: string; wasQuoted: boolean }> {
+    const tokens: Array<{ token: string; wasQuoted: boolean }> = [];
     let i = 0;
 
     while (i < line.length) {
@@ -699,6 +742,7 @@ class ISONLParser {
               case "r": result += "\r"; break;
               case "\\": result += "\\"; break;
               case '"': result += '"'; break;
+              case "|": result += "|"; break;
               default: result += next;
             }
             i += 2;
@@ -707,18 +751,21 @@ class ISONLParser {
           }
         }
         i++; // skip closing quote
-        tokens.push(result);
+        tokens.push({ token: result, wasQuoted: true });
       } else {
         const start = i;
         while (i < line.length && line[i] !== " " && line[i] !== "\t") i++;
-        tokens.push(line.substring(start, i));
+        tokens.push({ token: line.substring(start, i), wasQuoted: false });
       }
     }
 
     return tokens;
   }
 
-  private parseValue(token: string): Value {
+  private parseValue(token: string, wasQuoted: boolean): Value {
+    // Quoted tokens are always literal strings — never re-interpreted as
+    // null/bool/number/reference (otherwise "123" could not round-trip)
+    if (wasQuoted) return token;
     if (token === "null" || token === "~") return null;
     if (token === "true") return true;
     if (token === "false") return false;
@@ -734,10 +781,49 @@ class ISONLParser {
 }
 
 class ISONLSerializer {
+  // Characters that would corrupt the line structure if they appeared raw
+  // in the envelope (kind, name, or field names): pipe, quote, backslash,
+  // space, tab, newline, carriage return
+  private static readonly ENVELOPE_FORBIDDEN = /[|"\\ \t\n\r]/;
+
+  /**
+   * Reject kind/name/fields that cannot survive an ISONL round-trip
+   */
+  private validateEnvelope(block: Block): void {
+    const parts: Array<[string, string]> = [["kind", block.kind], ["name", block.name]];
+    for (const [label, value] of parts) {
+      if (!value) {
+        throw new ISONSyntaxError(`ISONL block ${label} must be non-empty`);
+      }
+      if (ISONLSerializer.ENVELOPE_FORBIDDEN.test(value)) {
+        throw new ISONSyntaxError(
+          `ISONL block ${label} '${value}' contains characters that cannot be serialized (pipe, quote, backslash, or whitespace)`
+        );
+      }
+    }
+    if (block.kind.includes(".")) {
+      throw new ISONSyntaxError(`ISONL block kind '${block.kind}' must not contain '.'`);
+    }
+    if (block.kind.startsWith("#")) {
+      throw new ISONSyntaxError(`ISONL block kind '${block.kind}' must not start with '#'`);
+    }
+    for (const field of block.fields) {
+      if (!field) {
+        throw new ISONSyntaxError("ISONL field names must be non-empty");
+      }
+      if (ISONLSerializer.ENVELOPE_FORBIDDEN.test(field)) {
+        throw new ISONSyntaxError(
+          `ISONL field name '${field}' contains characters that cannot be serialized (pipe, quote, backslash, or whitespace)`
+        );
+      }
+    }
+  }
+
   serialize(doc: Document): string {
     const lines: string[] = [];
 
     for (const block of doc.blocks) {
+      this.validateEnvelope(block);
       const header = `${block.kind}.${block.name}`;
       const fields = block.fieldInfo.map(fi => fi.type ? `${fi.name}:${fi.type}` : fi.name).join(" ");
 
@@ -755,20 +841,36 @@ class ISONLSerializer {
     if (typeof value === "boolean") return value ? "true" : "false";
     if (typeof value === "number") return value.toString();
     if (value instanceof Reference) return value.toIson();
+    return this.quoteIfNeeded(value);
+  }
 
-    // String - check if needs quoting
-    if (value.includes(" ") || value.includes("\t") || value.includes("|") ||
-        value.includes("\n") || value.includes('"') || value === "true" ||
-        value === "false" || value === "null" || value.startsWith(":") ||
-        /^-?\d+(\.\d+)?$/.test(value)) {
-      const escaped = value
-        .replace(/\\/g, "\\\\")
-        .replace(/"/g, '\\"')
-        .replace(/\n/g, "\\n")
-        .replace(/\t/g, "\\t");
-      return `"${escaped}"`;
-    }
-    return value;
+  private quoteIfNeeded(s: string): string {
+    if (s === "") return '""';
+
+    const needsQuotes =
+      s.includes(" ") ||
+      s.includes("\t") ||
+      s.includes("|") ||
+      s.includes("\n") ||
+      s.includes("\r") ||
+      s.includes('"') ||
+      s.includes("\\") ||
+      s === "true" ||
+      s === "false" ||
+      s === "null" ||
+      s.startsWith(":") ||
+      /^-?\d+(\.\d+)?$/.test(s);
+
+    if (!needsQuotes) return s;
+
+    const escaped = s
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/\n/g, "\\n")
+      .replace(/\t/g, "\\t")
+      .replace(/\r/g, "\\r")
+      .replace(/\|/g, "\\|");
+    return `"${escaped}"`;
   }
 }
 
@@ -880,13 +982,15 @@ export interface FromDictOptions {
   autoRefs?: boolean;
   /** Reorder columns for optimal LLM comprehension (default: false) */
   smartOrder?: boolean;
+  /** Flatten nested objects into separate tables (default: true) */
+  flatten?: boolean;
 }
 
 /**
- * Create a Document from a plain JavaScript object
+ * Create a Document from a plain JavaScript object with recursive flattening
  */
 export function fromDict(
-  data: Record<string, any[]>,
+  data: Record<string, any>,
   options: FromDictOptions | string = {}
 ): Document {
   // Handle legacy string parameter for backwards compatibility
@@ -894,50 +998,205 @@ export function fromDict(
     ? { kind: options }
     : options;
 
-  const { kind = 'table', autoRefs = false, smartOrder = false } = opts;
+  const { kind = 'table', autoRefs = false, smartOrder = false, flatten = true } = opts;
   const doc = new Document();
-  const tableNames = new Set(Object.keys(data));
+  const extraBlocks: Block[] = [];
+  let refCounter = 1;
 
-  // Detect reference fields if autoRefs is enabled
-  const refFields: Map<string, string> = new Map();
-  if (autoRefs) {
-    for (const [tableName, tableData] of Object.entries(data)) {
-      if (Array.isArray(tableData) && tableData.length > 0 && typeof tableData[0] === 'object') {
-        for (const key of Object.keys(tableData[0])) {
-          // Detect _id suffix pattern (e.g., customer_id -> customers)
-          if (key.endsWith('_id') && key !== 'id') {
-            const refType = key.slice(0, -3);
-            if (tableNames.has(refType + 's') || tableNames.has(refType)) {
-              refFields.set(key, refType);
+  // Helper: Check if value is a nested object (not array, not null)
+  const isNestedObject = (val: any): boolean => {
+    return val !== null && typeof val === 'object' && !Array.isArray(val);
+  };
+
+  // Helper: Check if value is an array of objects
+  const isArrayOfObjects = (val: any): boolean => {
+    return Array.isArray(val) && val.length > 0 && typeof val[0] === 'object' && val[0] !== null && !Array.isArray(val[0]);
+  };
+
+  // Helper: Check if value is an array of primitives
+  const isArrayOfPrimitives = (val: any): boolean => {
+    return Array.isArray(val) && (val.length === 0 || typeof val[0] !== 'object');
+  };
+
+  // Helper: Check if value is an array of arrays
+  const isArrayOfArrays = (val: any): boolean => {
+    return Array.isArray(val) && val.length > 0 && Array.isArray(val[0]);
+  };
+
+  // Helper: Add or update an extra block
+  const addToExtraBlock = (blockName: string, blockKind: string, fields: string[], row: Row) => {
+    let existingBlock = extraBlocks.find(b => b.name === blockName);
+    if (existingBlock) {
+      // Add new fields if they don't exist
+      for (const k of fields) {
+        if (!existingBlock.fields.includes(k)) {
+          existingBlock.fields.push(k);
+          existingBlock.fieldInfo.push({ name: k, type: undefined, isComputed: false });
+        }
+      }
+      existingBlock.rows.push(row);
+    } else {
+      const block = new Block(blockKind, blockName);
+      block.fields = [...fields];
+      block.fieldInfo = fields.map(f => ({ name: f, type: undefined, isComputed: false }));
+      block.rows.push(row);
+      extraBlocks.push(block);
+    }
+  };
+
+  // Helper: Recursively flatten nested structures
+  const flattenValue = (key: string, value: any, parentName: string, rowId: any, parentRef: Reference): { skip: boolean; value?: any } => {
+    const nestedName = `${parentName}_${key}`;
+
+    if (isNestedObject(value)) {
+      // Nested object - create separate block and recurse
+      const nestedRow: Row = {};
+      nestedRow[`${parentName}_id`] = parentRef;
+
+      const nestedFields = [`${parentName}_id`];
+
+      for (const [nk, nv] of Object.entries(value)) {
+        if (isNestedObject(nv) || isArrayOfObjects(nv) || isArrayOfPrimitives(nv)) {
+          // Recurse for deeper nesting
+          flattenValue(nk, nv, nestedName, rowId, parentRef);
+        } else {
+          nestedRow[nk] = nv as Value;
+          nestedFields.push(nk);
+        }
+      }
+
+      // Only add if there are fields beyond the reference
+      if (Object.keys(nestedRow).length > 1) {
+        addToExtraBlock(nestedName, 'table', nestedFields, nestedRow);
+      }
+
+      return { skip: true };
+
+    } else if (isArrayOfObjects(value)) {
+      // Array of objects - create separate table
+      for (const item of value) {
+        const nestedRow: Row = {};
+        nestedRow[`${parentName}_id`] = parentRef;
+        const nestedFields = [`${parentName}_id`];
+
+        for (const [nk, nv] of Object.entries(item)) {
+          if (isNestedObject(nv) || isArrayOfObjects(nv) || isArrayOfPrimitives(nv)) {
+            // Recurse for deeper nesting
+            flattenValue(nk, nv, nestedName, rowId, parentRef);
+          } else {
+            nestedRow[nk] = nv as Value;
+            if (!nestedFields.includes(nk)) nestedFields.push(nk);
+          }
+        }
+
+        if (Object.keys(nestedRow).length > 1) {
+          addToExtraBlock(nestedName, 'table', nestedFields, nestedRow);
+        }
+      }
+
+      return { skip: true };
+
+    } else if (isArrayOfPrimitives(value) && value.length > 0) {
+      // Array of primitives - create separate table with value column
+      for (const item of value) {
+        const nestedRow: Row = {};
+        nestedRow[`${parentName}_id`] = parentRef;
+        nestedRow['value'] = item;
+        addToExtraBlock(nestedName, 'table', [`${parentName}_id`, 'value'], nestedRow);
+      }
+
+      return { skip: true };
+    }
+
+    // Not a nested structure - keep the value
+    return { skip: false, value: value };
+  };
+
+  // Helper: Flatten a row, extracting nested structures
+  const flattenRow = (row: any, parentName: string, rowId: any): Row => {
+    const flatRow: Row = {};
+    const parentRef = new Reference(String(rowId));
+
+    for (const [key, value] of Object.entries(row)) {
+      if (flatten && (isNestedObject(value) || isArrayOfObjects(value) || isArrayOfPrimitives(value))) {
+        const result = flattenValue(key, value, parentName, rowId, parentRef);
+        if (!result.skip) {
+          flatRow[key] = result.value;
+        }
+        // Skip - field is flattened to separate table
+      } else if (value === null || value === undefined) {
+        flatRow[key] = null;
+      } else {
+        flatRow[key] = value as Value;
+      }
+    }
+
+    return flatRow;
+  };
+
+  // Process main data
+  for (const [name, content] of Object.entries(data)) {
+    let blockKind: string;
+    let fields: string[];
+    let rows: Row[];
+
+    if (Array.isArray(content)) {
+      if (isArrayOfArrays(content)) {
+        // Array of arrays - create table with generated column names
+        const maxCols = Math.max(...content.map(row => row.length));
+
+        // Generate column names: col1, col2, col3...
+        fields = Array.from({ length: maxCols }, (_, i) => `col${i + 1}`);
+        rows = content.map(row => {
+          const obj: Row = {};
+          fields.forEach((f, i) => obj[f] = row[i] !== undefined ? row[i] : null);
+          return obj;
+        });
+        blockKind = 'table';
+
+      } else if (content.length > 0 && typeof content[0] === 'object' && content[0] !== null) {
+        // Table: array of objects
+        const fieldSet = new Set<string>();
+        const processedRows: Row[] = [];
+
+        for (let i = 0; i < content.length; i++) {
+          const item = content[i];
+          if (typeof item === 'object' && item !== null) {
+            // Determine row ID
+            const rowId = item.id !== undefined ? item.id : refCounter++;
+
+            // Flatten the row
+            const flatRow = flattenRow(item, name, rowId);
+
+            for (const key of Object.keys(flatRow)) {
+              fieldSet.add(key);
             }
+            processedRows.push(flatRow);
           }
         }
+
+        fields = Array.from(fieldSet);
+        rows = processedRows;
+        blockKind = 'table';
+
+      } else if (content.length > 0) {
+        // Array of primitives - create a simple table
+        fields = ['value'];
+        rows = content.map(v => ({ value: v }));
+        blockKind = 'table';
+      } else {
+        continue;
       }
-    }
-    // Special case: nodes/edges graph pattern
-    if (tableNames.has('nodes') && tableNames.has('edges')) {
-      refFields.set('source', 'node');
-      refFields.set('target', 'node');
-    }
-  }
-
-  for (const [name, rows] of Object.entries(data)) {
-    if (!Array.isArray(rows) || rows.length === 0) continue;
-
-    const block = new Block(kind, name);
-
-    // Get fields from all rows (preserving insertion order)
-    let fields: string[] = [];
-    const seenFields = new Set<string>();
-    for (const rowData of rows) {
-      if (typeof rowData === 'object' && rowData !== null) {
-        for (const key of Object.keys(rowData)) {
-          if (!seenFields.has(key)) {
-            fields.push(key);
-            seenFields.add(key);
-          }
-        }
-      }
+    } else if (typeof content === 'object' && content !== null) {
+      // Object: key-value pairs
+      const rowId = content.id !== undefined ? content.id : name;
+      const flatRow = flattenRow(content, name, rowId);
+      fields = Object.keys(flatRow);
+      rows = [flatRow];
+      blockKind = 'object';
+    } else {
+      // Skip primitives at top level
+      continue;
     }
 
     // Apply smart ordering if enabled
@@ -945,25 +1204,17 @@ export function fromDict(
       fields = smartOrderFields(fields);
     }
 
-    block.fields = fields;
-    block.fieldInfo = fields.map(f => ({ name: f, type: undefined, isComputed: false }));
-
-    // Add rows with reference conversion if autoRefs
-    for (const rowData of rows) {
-      const row: Row = {};
-      for (const field of fields) {
-        const value = rowData[field];
-        if (value !== undefined) {
-          if (autoRefs && refFields.has(field) && (typeof value === 'number' || typeof value === 'string')) {
-            row[field] = new Reference(String(value), refFields.get(field));
-          } else {
-            row[field] = value;
-          }
-        }
-      }
-      block.rows.push(row);
+    if (fields.length > 0 && rows.length > 0) {
+      const block = new Block(blockKind, name);
+      block.fields = fields;
+      block.fieldInfo = fields.map(f => ({ name: f, type: undefined, isComputed: false }));
+      block.rows = rows;
+      doc.blocks.push(block);
     }
+  }
 
+  // Add extra blocks from flattened nested structures
+  for (const block of extraBlocks) {
     doc.blocks.push(block);
   }
 
@@ -994,3 +1245,6 @@ export function isString(value: Value): value is string {
 export function isReference(value: Value): value is Reference {
   return value instanceof Reference;
 }
+
+// Re-export validation module
+export * as validation from './validation';

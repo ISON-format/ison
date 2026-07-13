@@ -2,20 +2,20 @@
   "name": "ison-lang",
   "displayName": "ISON - Token Efficient Data Format for LLMs",
   "description": "Syntax highlighting and language support for ISON (Interchange Simple Object Notation) - a token-efficient data format for LLMs",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "ison-dev",
   "author": {
     "name": "Mahesh Vaikri",
-    "url": "https://github.com/maheshvaikri-code"
+    "url": "https://github.com/ISON-format"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/maheshvaikri-code/ison"
+    "url": "https://github.com/ISON-format/ison"
   },
   "homepage": "https://www.ison.dev",
   "bugs": {
-    "url": "https://github.com/maheshvaikri-code/ison/issues"
+    "url": "https://github.com/ISON-format/ison/issues"
   },
   "engines": {
     "vscode": "^1.75.0"
@@ -46,6 +46,13 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "iconThemes": [
+      {
+        "id": "ison-icons",
+        "label": "ISON File Icons",
+        "path": "./icons/ison-icon-theme.json"
+      }
+    ],
     "languages": [
       {
         "id": "ison",

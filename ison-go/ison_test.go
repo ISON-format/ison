@@ -2,6 +2,7 @@ package ison
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 )
 
 func TestVersion(t *testing.T) {
-	assert.Equal(t, "1.0.0", Version)
+	assert.Equal(t, "1.0.1", Version)
 }
 
 func TestParseSimpleTable(t *testing.T) {
@@ -286,7 +287,8 @@ func TestDumpsISONL(t *testing.T) {
 	block.AddRow(Row{"id": Int(2), "name": String("Bob")})
 	doc.AddBlock(block)
 
-	output := DumpsISONL(doc)
+	output, err := DumpsISONL(doc)
+	require.NoError(t, err)
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	assert.Len(t, lines, 2)
 	assert.Contains(t, lines[0], "table.users|id:int name:string|1 Alice")
@@ -734,4 +736,193 @@ func TestDefaultFromDictOptions(t *testing.T) {
 	opts := DefaultFromDictOptions()
 	assert.False(t, opts.AutoRefs)
 	assert.False(t, opts.SmartOrder)
+}
+
+// ==================== ISONL Integrity Regression Tests ====================
+
+func TestISONLEscapingIntegrity(t *testing.T) {
+	// Regression: delimiter/escape chars in values must survive a round-trip
+	adversarial := []string{
+		"C:\\path\\", // trailing backslash used to desync quote tracking
+		"\\",
+		"a\\",
+		"ends with backslash \\",
+		"pipe|inside",
+		"quote \" inside",
+		"mix \\\" of both",
+		"line1\nline2",
+		"tab\there",
+		"cr\rhere",
+		"crlf\r\nend",
+		"123",
+		"true",
+		":ref",
+		"",
+		"\\|",
+		" leading and trailing ",
+	}
+
+	doc := NewDocument()
+	block := NewBlock("table", "adversarial")
+	block.AddField("v", "")
+	for _, s := range adversarial {
+		block.AddRow(Row{"v": String(s)})
+	}
+	doc.AddBlock(block)
+
+	output, err := DumpsISONL(doc)
+	require.NoError(t, err)
+
+	parsed, err := ParseISONL(output)
+	require.NoError(t, err)
+
+	parsedBlock, ok := parsed.Get("adversarial")
+	require.True(t, ok)
+	require.Len(t, parsedBlock.Rows, len(adversarial))
+	for i, want := range adversarial {
+		got, isStr := parsedBlock.Rows[i]["v"].AsString()
+		assert.True(t, isStr, "row %d: expected string, got %#v", i, parsedBlock.Rows[i]["v"])
+		assert.Equal(t, want, got, "row %d: round-trip corrupted value", i)
+	}
+
+	// Compound case: a quoted value ending in an escaped backslash followed by
+	// a pipe-bearing value on the same line — the exact shape that desynced
+	// quote tracking and corrupted section splitting
+	compoundRows := []Row{
+		{"a": String("x \\"), "b": String("y|z")},
+		{"a": String("x\\"), "b": String("y|z")},
+	}
+	doc = NewDocument()
+	block = NewBlock("table", "compound")
+	block.AddField("a", "")
+	block.AddField("b", "")
+	for _, row := range compoundRows {
+		block.AddRow(row)
+	}
+	doc.AddBlock(block)
+
+	output, err = DumpsISONL(doc)
+	require.NoError(t, err)
+
+	parsed, err = ParseISONL(output)
+	require.NoError(t, err)
+
+	parsedBlock, ok = parsed.Get("compound")
+	require.True(t, ok)
+	require.Len(t, parsedBlock.Rows, len(compoundRows))
+	for i, want := range compoundRows {
+		assert.Equal(t, want, parsedBlock.Rows[i], "compound row %d corrupted", i)
+	}
+}
+
+func TestISONLRoundtripProperty(t *testing.T) {
+	// Property test: random strings over a hostile alphabet must round-trip.
+	// Deterministic LCG so failures are reproducible.
+	state := int64(20260713)
+	next := func() int64 {
+		state = (state*1103515245 + 12345) % 2147483648
+		return state
+	}
+	randInt := func(lo, hi int) int {
+		return lo + int(next()%int64(hi-lo+1))
+	}
+
+	alphabet := []string{"a", "b", " ", "|", "\"", "\\", "\n", "\r", "\t", ".", ":", "#", "0", "1", "true", "null"}
+
+	for trial := 0; trial < 300; trial++ {
+		numFields := randInt(1, 4)
+		fields := make([]string, numFields)
+		for i := range fields {
+			fields[i] = fmt.Sprintf("f%d", i)
+		}
+
+		numRows := randInt(1, 3)
+		rows := make([]Row, numRows)
+		for r := range rows {
+			row := make(Row)
+			for _, f := range fields {
+				var sb strings.Builder
+				for n := randInt(0, 12); n > 0; n-- {
+					sb.WriteString(alphabet[randInt(0, len(alphabet)-1)])
+				}
+				row[f] = String(sb.String())
+			}
+			rows[r] = row
+		}
+
+		doc := NewDocument()
+		block := NewBlock("table", "t")
+		for _, f := range fields {
+			block.AddField(f, "")
+		}
+		for _, row := range rows {
+			block.AddRow(row)
+		}
+		doc.AddBlock(block)
+
+		output, err := DumpsISONL(doc)
+		require.NoError(t, err, "trial %d: dump failed", trial)
+
+		parsed, err := ParseISONL(output)
+		require.NoError(t, err, "trial %d: parse failed for %q", trial, output)
+
+		parsedBlock, ok := parsed.Get("t")
+		require.True(t, ok, "trial %d: block missing for %q", trial, output)
+		require.Len(t, parsedBlock.Rows, len(rows), "trial %d: row count mismatch for %q", trial, output)
+		for i, want := range rows {
+			assert.Equal(t, want, parsedBlock.Rows[i], "trial %d row %d: %#v -> %q -> %#v", trial, i, want, output, parsedBlock.Rows[i])
+		}
+	}
+}
+
+func TestISONLEnvelopeValidation(t *testing.T) {
+	// Envelope values that can't be serialized must be rejected, not corrupted
+	makeDoc := func(kind, name string, fields []string) *Document {
+		doc := NewDocument()
+		block := NewBlock(kind, name)
+		row := make(Row)
+		for _, f := range fields {
+			block.AddField(f, "")
+			row[f] = Int(1)
+		}
+		block.AddRow(row)
+		doc.AddBlock(block)
+		return doc
+	}
+
+	badCases := []struct {
+		desc   string
+		kind   string
+		name   string
+		fields []string
+	}{
+		{"kind with pipe", "ta|ble", "t", []string{"id"}},
+		{"kind with space", "ta ble", "t", []string{"id"}},
+		{"kind with dot", "t.able", "t", []string{"id"}},
+		{"kind with hash", "#table", "t", []string{"id"}},
+		{"empty kind", "", "t", []string{"id"}},
+		{"name with pipe", "table", "na|me", []string{"id"}},
+		{"name with newline", "table", "na\nme", []string{"id"}},
+		{"name with space", "table", "na me", []string{"id"}},
+		{"empty name", "table", "", []string{"id"}},
+		{"field with space", "table", "t", []string{"bad field"}},
+		{"field with pipe", "table", "t", []string{"bad|field"}},
+		{"empty field", "table", "t", []string{""}},
+	}
+	for _, tc := range badCases {
+		_, err := DumpsISONL(makeDoc(tc.kind, tc.name, tc.fields))
+		assert.Error(t, err, "should have rejected envelope: %s", tc.desc)
+	}
+
+	// Dots in the block NAME are legal — the parser splits on the first dot
+	output, err := DumpsISONL(makeDoc("table", "v1.2", []string{"id"}))
+	require.NoError(t, err)
+
+	parsed, err := ParseISONL(output)
+	require.NoError(t, err)
+
+	block, ok := parsed.Get("v1.2")
+	require.True(t, ok)
+	assert.Equal(t, "table", block.Kind)
+	assert.Equal(t, "v1.2", block.Name)
 }

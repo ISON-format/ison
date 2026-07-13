@@ -42,7 +42,7 @@ classifiers = [
 ]
 requires-python = ">=3.9"
 dependencies = [
-    "ison-py>=1.0.2",
+    "ison-py>=1.0.3",
 ]
 
 [project.optional-dependencies]
@@ -57,8 +57,8 @@ dev = [
 [project.urls]
 Homepage = "https://www.ison.dev"
 Documentation = "https://www.ison.dev"
-Repository = "https://github.com/maheshvaikri-code/ison"
-Issues = "https://github.com/maheshvaikri-code/ison/issues"
+Repository = "https://github.com/ISON-format/ison"
+Issues = "https://github.com/ISON-format/ison/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

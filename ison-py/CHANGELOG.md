@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.3] - 2026-07-13
+
+### Fixed
+- **ISONL Round-Trip Integrity**: Serialized values ending in a backslash (e.g. `"x \\"`) no longer desync the ISONL quote tracking, which previously caused a later `|` on the same line to split sections incorrectly (parse errors or silently corrupted rows). The pipe-splitter now consumes escape pairs inside quoted strings.
+- **ISONL Quoting**: String values containing carriage returns or backslashes are now quoted and escaped on serialization; previously they were emitted raw and could be corrupted or lost on parse.
+- **Explicit `\|` Escape**: The tokenizer now decodes `\|` explicitly instead of relying on the unknown-escape fallback.
+
+### Added
+- **ISONL Envelope Validation**: `dumps_isonl()` now raises `ISONError` when a block kind, name, or field name contains characters that cannot survive an ISONL round-trip (pipe, quote, backslash, whitespace; plus `.` or leading `#` in kind) instead of silently emitting a corrupt line. Dots remain legal in block names (the parser splits the header on the first dot).
+- **Regression Tests**: Adversarial escaping round-trip test, a seeded 300-trial property test over a hostile character alphabet, and envelope validation tests.
+
 ## [1.0.1] - 2025-12-29
 
 ### Fixed

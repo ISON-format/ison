@@ -1,9 +1,27 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/maheshvaikri-code/ison/main/images/ison_logo_git.png" alt="ISON Logo">
+  <img src="https://raw.githubusercontent.com/ISON-format/ison/main/images/ison_logo_git.png" alt="ISON Logo">
 </p>
 
-
 # isonantic-ts
+
+> **DEPRECATED:** This package has been merged into `ison-ts`. Please use `ison-ts/validation` instead.
+>
+> ```bash
+> npm install ison-ts
+> ```
+>
+> ```typescript
+> // Old (deprecated)
+> import { i, document } from 'isonantic-ts';
+>
+> // New (recommended)
+> import { validation } from 'ison-ts';
+> const { i, document } = validation;
+> ```
+>
+> This package will no longer receive updates. All new features and bug fixes will be made to `ison-ts`.
+
+---
 
 Zod-like validation and type-safe models for ISON format in TypeScript/JavaScript.
 
@@ -267,7 +285,7 @@ npm test
 
 - [Documentation](https://www.ison.dev) | [www.getison.com](https://www.getison.com)
 - [ISON TypeScript Parser](https://www.npmjs.com/package/ison-ts)
-- [GitHub](https://github.com/maheshvaikri-code/ison)
+- [GitHub](https://github.com/ISON-format/ison)
 
 ## License
 

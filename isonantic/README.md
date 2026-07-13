@@ -1,8 +1,26 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/maheshvaikri-code/ison/main/images/ison_logo_git.png" alt="ISON Logo">
+  <img src="https://raw.githubusercontent.com/ISON-format/ison/main/images/ison_logo_git.png" alt="ISON Logo">
 </p>
 
 # ISONantic
+
+> **DEPRECATED:** This package has been merged into `ison-py`. Please use `ison_parser.validation` instead.
+>
+> ```bash
+> pip install ison-py
+> ```
+>
+> ```python
+> # Old (deprecated)
+> from isonantic import TableModel, Field
+>
+> # New (recommended)
+> from ison_parser.validation import TableModel, Field
+> ```
+>
+> This package will no longer receive updates. All new features and bug fixes will be made to `ison-py`.
+
+---
 
 **ISONantic** - A Pydantic-like data validation library for ISON format.
 
@@ -328,7 +346,7 @@ pytest tests/
 
 - [Documentation](https://www.ison.dev) | [www.getison.com](https://www.getison.com)
 - [ISON Specification](https://www.ison.dev/spec.html)
-- [GitHub](https://github.com/maheshvaikri-code/ison)
+- [GitHub](https://github.com/ISON-format/ison)
 - [ison-py](https://pypi.org/project/ison-py/)
 
 ## License

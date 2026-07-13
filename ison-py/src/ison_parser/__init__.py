@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Generator
 from pathlib import Path
 
-__version__ = "1.0.1"
+__version__ = "1.0.3"
 __author__ = "Mahesh Vaikri"
 
 # =============================================================================
@@ -250,6 +250,7 @@ class Tokenizer:
         'n': '\n',
         't': '\t',
         'r': '\r',
+        '|': '|',
     }
 
     def __init__(self, line: str, line_num: int = 0):
@@ -848,9 +849,9 @@ def _smart_order_fields(fields: list[str]) -> list[str]:
     return id_fields + name_fields + other_fields + ref_fields
 
 
-def from_dict(data: dict, kind: str = "object", auto_refs: bool = False, smart_order: bool = False) -> Document:
+def from_dict(data: dict, kind: str = "object", auto_refs: bool = False, smart_order: bool = False, flatten: bool = True) -> Document:
     """
-    Create an ISON Document from a dictionary.
+    Create an ISON Document from a dictionary with recursive flattening.
 
     Args:
         data: Dictionary with block names as keys
@@ -858,73 +859,190 @@ def from_dict(data: dict, kind: str = "object", auto_refs: bool = False, smart_o
         auto_refs: If True, auto-detect and convert foreign keys to References
         smart_order: If True, reorder columns for optimal LLM comprehension
                      (id first, then names, then data, then references)
+        flatten: If True, flatten nested objects/arrays into separate tables (default: True)
 
     Returns:
         Document object
     """
     doc = Document()
-    table_names = set(data.keys())
+    extra_blocks = []
+    ref_counter = [1]  # Use list to allow mutation in nested functions
 
-    # Detect reference fields if auto_refs is enabled
-    ref_fields = {}
-    if auto_refs:
-        for table_name, table_data in data.items():
-            if isinstance(table_data, list) and table_data and isinstance(table_data[0], dict):
-                for key in table_data[0].keys():
-                    # Detect _id suffix pattern (e.g., customer_id -> customers)
-                    if key.endswith('_id') and key != 'id':
-                        ref_type = key[:-3]
-                        if ref_type + 's' in table_names or ref_type in table_names:
-                            ref_fields[key] = ref_type
+    # Helper: Check if value is a nested object (not list, not None)
+    def is_nested_object(val):
+        return val is not None and isinstance(val, dict)
 
-        # Special case: nodes/edges graph pattern
-        if 'nodes' in table_names and 'edges' in table_names:
-            ref_fields['source'] = 'node'
-            ref_fields['target'] = 'node'
+    # Helper: Check if value is an array of objects
+    def is_array_of_objects(val):
+        return isinstance(val, list) and len(val) > 0 and isinstance(val[0], dict)
 
+    # Helper: Check if value is an array of primitives
+    def is_array_of_primitives(val):
+        return isinstance(val, list) and (len(val) == 0 or not isinstance(val[0], (dict, list)))
+
+    # Helper: Check if value is an array of arrays
+    def is_array_of_arrays(val):
+        return isinstance(val, list) and len(val) > 0 and isinstance(val[0], list)
+
+    # Helper: Add or update an extra block
+    def add_to_extra_block(block_name, block_kind, fields, row):
+        existing_block = next((b for b in extra_blocks if b.name == block_name), None)
+        if existing_block:
+            # Add new fields if they don't exist
+            for k in fields:
+                if k not in existing_block.fields:
+                    existing_block.fields.append(k)
+            existing_block.rows.append(row)
+        else:
+            extra_blocks.append(Block(kind=block_kind, name=block_name, fields=list(fields), rows=[row]))
+
+    # Helper: Recursively flatten nested structures
+    def flatten_value(key, value, parent_name, row_id, parent_ref):
+        nested_name = f"{parent_name}_{key}"
+
+        if is_nested_object(value):
+            # Nested object - create separate block and recurse
+            nested_row = {}
+            nested_row[f"{parent_name}_id"] = parent_ref
+
+            nested_fields = [f"{parent_name}_id"]
+
+            for nk, nv in value.items():
+                if is_nested_object(nv) or is_array_of_objects(nv) or is_array_of_primitives(nv):
+                    # Recurse for deeper nesting
+                    flatten_value(nk, nv, nested_name, row_id, parent_ref)
+                else:
+                    nested_row[nk] = nv
+                    nested_fields.append(nk)
+
+            # Only add if there are fields beyond the reference
+            if len(nested_row) > 1:
+                add_to_extra_block(nested_name, 'table', nested_fields, nested_row)
+
+            return {'skip': True}
+
+        elif is_array_of_objects(value):
+            # Array of objects - create separate table
+            for item in value:
+                nested_row = {}
+                nested_row[f"{parent_name}_id"] = parent_ref
+                nested_fields = [f"{parent_name}_id"]
+
+                for nk, nv in item.items():
+                    if is_nested_object(nv) or is_array_of_objects(nv) or is_array_of_primitives(nv):
+                        # Recurse for deeper nesting
+                        flatten_value(nk, nv, nested_name, row_id, parent_ref)
+                    else:
+                        nested_row[nk] = nv
+                        if nk not in nested_fields:
+                            nested_fields.append(nk)
+
+                if len(nested_row) > 1:
+                    add_to_extra_block(nested_name, 'table', nested_fields, nested_row)
+
+            return {'skip': True}
+
+        elif is_array_of_primitives(value) and len(value) > 0:
+            # Array of primitives - create separate table with value column
+            for item in value:
+                nested_row = {}
+                nested_row[f"{parent_name}_id"] = parent_ref
+                nested_row['value'] = item
+                add_to_extra_block(nested_name, 'table', [f"{parent_name}_id", 'value'], nested_row)
+
+            return {'skip': True}
+
+        # Not a nested structure - keep the value
+        return {'skip': False, 'value': value}
+
+    # Helper: Flatten a row, extracting nested structures
+    def flatten_row(row, parent_name, row_id):
+        flat_row = {}
+        parent_ref = Reference(id=str(row_id))
+
+        for key, value in row.items():
+            if flatten and (is_nested_object(value) or is_array_of_objects(value) or is_array_of_primitives(value)):
+                result = flatten_value(key, value, parent_name, row_id, parent_ref)
+                if not result['skip']:
+                    flat_row[key] = result.get('value')
+                # Skip - field is flattened to separate table
+            elif value is None:
+                flat_row[key] = None
+            else:
+                flat_row[key] = value
+
+        return flat_row
+
+    # Process main data
     for name, content in data.items():
         if isinstance(content, list):
-            # Table with multiple rows
-            if content and isinstance(content[0], dict):
-                # Collect all unique fields from all objects in array (preserving order)
-                fields = []
-                seen_fields = set()
-                for item in content:
+            if is_array_of_arrays(content):
+                # Array of arrays - create table with generated column names
+                max_cols = max(len(row) for row in content)
+
+                # Generate column names: col1, col2, col3...
+                fields = [f"col{i+1}" for i in range(max_cols)]
+                rows = []
+                for row in content:
+                    obj = {}
+                    for i, f in enumerate(fields):
+                        obj[f] = row[i] if i < len(row) else None
+                    rows.append(obj)
+                block_kind = "table"
+
+            elif content and isinstance(content[0], dict):
+                # Table: array of objects
+                field_set = []
+                processed_rows = []
+
+                for i, item in enumerate(content):
                     if isinstance(item, dict):
-                        for key in item.keys():
-                            if key not in seen_fields:
-                                fields.append(key)
-                                seen_fields.add(key)
+                        # Determine row ID
+                        row_id = item.get('id', ref_counter[0])
+                        if 'id' not in item:
+                            ref_counter[0] += 1
 
-                # Apply smart ordering if enabled
-                if smart_order:
-                    fields = _smart_order_fields(fields)
+                        # Flatten the row
+                        flat_row = flatten_row(item, name, row_id)
 
-                # Convert rows with references if auto_refs
-                if auto_refs and ref_fields:
-                    rows = []
-                    for item in content:
-                        new_row = {}
-                        for key, val in item.items():
-                            if key in ref_fields and isinstance(val, (int, str)):
-                                new_row[key] = Reference(id=str(val), type=ref_fields[key])
-                            else:
-                                new_row[key] = val
-                        rows.append(new_row)
-                else:
-                    rows = content
+                        for key in flat_row.keys():
+                            if key not in field_set:
+                                field_set.append(key)
+                        processed_rows.append(flat_row)
+
+                fields = field_set
+                rows = processed_rows
+                block_kind = "table"
+
+            elif content:
+                # Array of primitives - create a simple table
+                fields = ['value']
+                rows = [{'value': v} for v in content]
+                block_kind = "table"
             else:
                 continue
-            block_kind = "table"
+
         elif isinstance(content, dict):
-            # Single object
-            fields = list(content.keys())
-            rows = [content]
+            # Object: key-value pairs
+            row_id = content.get('id', name)
+            flat_row = flatten_row(content, name, row_id)
+            fields = list(flat_row.keys())
+            rows = [flat_row]
             block_kind = "object"
         else:
+            # Skip primitives at top level
             continue
 
-        block = Block(kind=block_kind, name=name, fields=fields, rows=rows)
+        # Apply smart ordering if enabled
+        if smart_order:
+            fields = _smart_order_fields(fields)
+
+        if fields and rows:
+            block = Block(kind=block_kind, name=name, fields=fields, rows=rows)
+            doc.blocks.append(block)
+
+    # Add extra blocks from flattened nested structures
+    for block in extra_blocks:
         doc.blocks.append(block)
 
     return doc
@@ -1051,7 +1169,15 @@ class ISONLParser:
         while i < len(line):
             char = line[i]
 
-            if char == '"' and (i == 0 or line[i-1] != '\\'):
+            if in_quotes and char == '\\' and i + 1 < len(line):
+                # Consume the escape pair so an escaped backslash before a
+                # closing quote ("foo\\") can't desync the quote tracking
+                current.append(char)
+                current.append(line[i + 1])
+                i += 2
+                continue
+
+            if char == '"':
                 in_quotes = not in_quotes
                 current.append(char)
             elif char == '|' and not in_quotes:
@@ -1127,6 +1253,38 @@ class ISONLParser:
 class ISONLSerializer:
     """Serialize to ISONL format"""
 
+    # Characters that would corrupt the line structure if they appeared
+    # raw in the envelope (kind, name, or field names)
+    _ENVELOPE_FORBIDDEN = set('|"\\ \t\n\r')
+
+    @classmethod
+    def _validate_envelope(cls, block) -> None:
+        """Reject kind/name/fields that cannot survive an ISONL round-trip"""
+        for label, value in (('kind', block.kind), ('name', block.name)):
+            if not value:
+                raise ISONError(f"ISONL block {label} must be non-empty")
+            if any(c in cls._ENVELOPE_FORBIDDEN for c in value):
+                raise ISONError(
+                    f"ISONL block {label} {value!r} contains characters that "
+                    "cannot be serialized (pipe, quote, backslash, or whitespace)"
+                )
+        if '.' in block.kind:
+            raise ISONError(
+                f"ISONL block kind {block.kind!r} must not contain '.'"
+            )
+        if block.kind.startswith('#'):
+            raise ISONError(
+                f"ISONL block kind {block.kind!r} must not start with '#'"
+            )
+        for field in block.fields:
+            if not field:
+                raise ISONError("ISONL field names must be non-empty")
+            if any(c in cls._ENVELOPE_FORBIDDEN for c in field):
+                raise ISONError(
+                    f"ISONL field name {field!r} contains characters that "
+                    "cannot be serialized (pipe, quote, backslash, or whitespace)"
+                )
+
     @classmethod
     def dumps(cls, doc: Document) -> str:
         """
@@ -1143,6 +1301,7 @@ class ISONLSerializer:
         lines = []
 
         for block in doc.blocks:
+            cls._validate_envelope(block)
             header = f"{block.kind}.{block.name}"
             fields_str = ' '.join(block.fields)
 
@@ -1193,6 +1352,8 @@ class ISONLSerializer:
             '\t' in s or
             '"' in s or
             '\n' in s or
+            '\r' in s or
+            '\\' in s or
             '|' in s or
             s in ('true', 'false', 'null') or
             s.startswith(':')
@@ -1444,7 +1605,7 @@ __all__ = [
     #   from ison_parser.plugins import rudradb
 ]
 
-# Lazy load plugins and integrations to avoid import errors if dependencies aren't installed
+# Lazy load plugins, integrations, and validation to avoid import errors if dependencies aren't installed
 def __getattr__(name):
     if name == 'plugins':
         from . import plugins
@@ -1452,6 +1613,9 @@ def __getattr__(name):
     if name == 'integrations':
         from . import integrations
         return integrations
+    if name == 'validation':
+        import importlib
+        return importlib.import_module('.validation', __name__)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

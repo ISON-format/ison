@@ -1,12 +1,30 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/maheshvaikri-code/ison/main/images/ison_logo_git.png" alt="ISON Logo">
+  <img src="https://raw.githubusercontent.com/ISON-format/ison/main/images/ison_logo_git.png" alt="ISON Logo">
 </p>
 
 # isonantic-go
 
+> **DEPRECATED:** This package has been merged into `ison-go`. Please use `ison-go/validation` instead.
+>
+> ```bash
+> go get github.com/ISON-format/ison/ison-go
+> ```
+>
+> ```go
+> // Old (deprecated)
+> import "github.com/ISON-format/ison/isonantic-go"
+>
+> // New (recommended)
+> import "github.com/ISON-format/ison/ison-go/validation"
+> ```
+>
+> This package will no longer receive updates. All new features and bug fixes will be made to `ison-go`.
+
+---
+
 Zod-like validation and type-safe schemas for ISON format in Go.
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/maheshvaikri-code/ison/isonantic-go.svg)](https://pkg.go.dev/github.com/maheshvaikri-code/ison/isonantic-go)
+[![Go Reference](https://pkg.go.dev/badge/github.com/ISON-format/ison/isonantic-go.svg)](https://pkg.go.dev/github.com/ISON-format/ison/isonantic-go)
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://img.shields.io/badge/tests-55%20passed-brightgreen.svg)]()
@@ -23,7 +41,7 @@ Zod-like validation and type-safe schemas for ISON format in Go.
 ## Installation
 
 ```bash
-go get github.com/maheshvaikri-code/ison/isonantic-go
+go get github.com/ISON-format/ison/isonantic-go
 ```
 
 ## Quick Start
@@ -33,8 +51,8 @@ package main
 
 import (
     "fmt"
-    ison "github.com/maheshvaikri-code/ison/ison-go"
-    "github.com/maheshvaikri-code/ison/isonantic-go"
+    ison "github.com/ISON-format/ison/ison-go"
+    "github.com/ISON-format/ison/isonantic-go"
 )
 
 func main() {
@@ -161,7 +179,7 @@ isonantic.Table("users", map[string]isonantic.Schema{
 Use the `I` namespace for cleaner code (similar to Zod's `z`):
 
 ```go
-import i "github.com/maheshvaikri-code/ison/isonantic-go"
+import i "github.com/ISON-format/ison/isonantic-go"
 
 schema := i.I.Table("users", map[i.Schema]i.Schema{
     "id":    i.I.Int(),
@@ -234,7 +252,7 @@ if result.Success {
 ## Error Handling
 
 ```go
-import "github.com/maheshvaikri-code/ison/isonantic-go"
+import "github.com/ISON-format/ison/isonantic-go"
 
 _, err := schema.Parse(invalidData)
 if err != nil {
@@ -313,7 +331,7 @@ evenSchema := isonantic.Int().
 ... and 41 more tests
 
 PASS
-ok      github.com/maheshvaikri-code/ison/isonantic-go    0.XXXs
+ok      github.com/ISON-format/ison/isonantic-go    0.XXXs
 ```
 
 ## API Reference
@@ -351,9 +369,9 @@ ok      github.com/maheshvaikri-code/ison/isonantic-go    0.XXXs
 
 ## Links
 
-- [ISON Go Parser](https://github.com/maheshvaikri-code/ison/tree/main/ison-go)
+- [ISON Go Parser](https://github.com/ISON-format/ison/tree/main/ison-go)
 - [ISON Documentation](https://www.ison.dev) | [www.getison.com](https://www.getison.com)
-- [GitHub Repository](https://github.com/maheshvaikri-code/ison)
+- [GitHub Repository](https://github.com/ISON-format/ison)
 
 ## License
 

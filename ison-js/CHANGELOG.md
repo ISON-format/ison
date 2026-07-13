@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.2] - 2026-07-13
+
+### Fixed
+- **ISONL Round-Trip Corruption**: Values ending in a backslash (e.g. `C:\path\`) no longer desync quote tracking in the ISONL line splitter, which caused parse errors or silent corruption when a later `|` appeared on the same line
+- **ISONL Quoting**: The ISONL serializer now quotes strings containing `\r` or `\`, so carriage returns and backslashes survive a round-trip instead of being emitted raw
+
+### Added
+- **ISONL Envelope Validation**: `dumpsISONL` now throws `ISONError` for block kind/name/field names that cannot be serialized (containing pipe, quote, backslash, or whitespace; kind additionally must not contain `.` or start with `#`) instead of writing corrupt lines
+
 ## [1.0.1] - 2025-12-29
 
 ### Fixed

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/maheshvaikri-code/ison/main/images/ison_logo_git.png" alt="ISON Logo">
+  <img src="https://raw.githubusercontent.com/ISON-format/ison/main/images/ison_logo_git.png" alt="ISON Logo">
 </p>
 
 # ISON Parser (JavaScript)
@@ -8,7 +8,7 @@
 
 [![npm version](https://badge.fury.io/js/ison-parser.svg)](https://badge.fury.io/js/ison-parser)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-33%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-80%20passed-brightgreen.svg)]()
 
 ## Features
 
@@ -17,6 +17,7 @@
 - **Native references** for relational data (`:ID` syntax)
 - **Type inference** for clean, minimal syntax
 - **Zero dependencies** - works in Node.js and browser
+- **Built-in validation** - Zod-like schema validation included
 
 ## Installation
 
@@ -67,6 +68,100 @@ const doc = ISON.loads(isonText);
   const doc = ISON.loads(isonText);
   console.log(doc.toDict());
 </script>
+```
+
+## Built-in Validation (Zod-like)
+
+ISON Parser includes a Zod-like validation module for schema validation:
+
+```javascript
+const { i, document, ValidationError } = require('ison-parser/validation');
+
+// Define schemas
+const userSchema = i.object({
+    id: i.int().min(1),
+    name: i.string().min(1).max(100),
+    email: i.string().email(),
+    role: i.string().default('user')
+});
+
+// Validate data
+const user = userSchema.parse({
+    id: 1,
+    name: 'Alice',
+    email: 'alice@example.com'
+});
+
+// SafeParse (non-throwing)
+const result = userSchema.safeParse(data);
+if (result.success) {
+    console.log(result.data);
+} else {
+    console.log(result.error.errors);
+}
+```
+
+### Schema Types
+
+```javascript
+// Primitives
+i.string()                    // String validation
+i.string().min(1).max(100)    // With length constraints
+i.string().email()            // Email validation
+i.string().regex(/pattern/)   // Regex validation
+
+i.number()                    // Number validation
+i.int()                       // Integer validation
+i.number().min(0).max(100)    // With range constraints
+i.number().positive()         // Must be > 0
+i.number().negative()         // Must be < 0
+
+i.boolean()                   // Boolean validation
+i.bool()                      // Alias
+
+i.null()                      // Null validation
+
+// ISON References
+i.ref()                       // Reference validation (:id or :type:id)
+
+// Complex types
+i.object({ ... })             // Object with shape
+i.array(i.string())           // Array of strings
+i.table('name', { ... })      // ISON table block
+```
+
+### Document Validation
+
+Validate complete ISON documents with multiple blocks:
+
+```javascript
+const schema = document({
+    users: i.table('users', {
+        id: i.int(),
+        name: i.string(),
+        email: i.string().email()
+    }),
+    config: i.object({
+        debug: i.bool().default(false)
+    }).optional()
+});
+
+const doc = schema.parse(ISON.loads(isonText).toDict());
+```
+
+### Schema Composition
+
+```javascript
+// Extend objects
+const baseSchema = i.object({ id: i.int(), name: i.string() });
+const userSchema = baseSchema.extend({ email: i.string().email() });
+
+// Pick/Omit fields
+const publicUser = userSchema.pick('id', 'name');
+const safeUser = userSchema.omit('password');
+
+// Custom refinements
+const evenNumber = i.int().refine(n => n % 2 === 0, 'Must be even');
 ```
 
 ## ISONL Streaming
@@ -224,50 +319,16 @@ const block: Block = doc.blocks[0];
 
 ## Test Results
 
-All tests passing:
+All 80 tests passing (33 parser + 47 validation):
 
 ```
 Running ISON v1.0 Parser Tests
 ========================================
-[PASS] test_basic_table
-[PASS] test_quoted_strings
-[PASS] test_escape_sequences
-[PASS] test_type_inference
-[PASS] test_references
-[PASS] test_null_handling
-[PASS] test_dot_path_fields
-[PASS] test_comments
-[PASS] test_multiple_blocks
-[PASS] test_serialization_roundtrip
-[PASS] test_to_json
-[PASS] test_from_dict
-[PASS] test_error_handling
-[PASS] test_typed_fields
-[PASS] test_relationship_references
-[PASS] test_summary_rows
-[PASS] test_computed_fields
-[PASS] test_serialization_with_types
-[PASS] test_json_to_ison
-[PASS] test_ison_to_json
-
-Running ISONL Tests
---------------------------------------------------
-[PASS] test_isonl_basic_parsing
-[PASS] test_isonl_type_inference
-[PASS] test_isonl_references
-[PASS] test_isonl_multiple_blocks
-[PASS] test_isonl_comments_and_empty
-[PASS] test_isonl_serialization
-[PASS] test_isonl_roundtrip
-[PASS] test_ison_to_isonl_conversion
-[PASS] test_isonl_to_ison_conversion
-[PASS] test_isonl_quoted_pipes
-[PASS] test_isonl_error_handling
-[PASS] test_isonl_fine_tuning_format
-[PASS] test_isonl_stream
-
-==================================================
 Results: 33 passed, 0 failed
+
+Running ISON Validation Tests
+========================================
+Results: 47 passed, 0 failed
 ```
 
 Run tests with:
@@ -280,8 +341,8 @@ npm test
 - [Documentation](https://www.ison.dev) | [www.getison.com](https://www.getison.com)
 - [Specification](https://www.ison.dev/spec.html)
 - [ISONL Spec](https://www.ison.dev/isonl.html)
-- [Python Package](https://pypi.org/project/ison-parser/)
-- [GitHub](https://github.com/maheshvaikri-code/ison)
+- [Python Package](https://pypi.org/project/ison-py/)
+- [GitHub](https://github.com/ISON-format/ison)
 
 ## License
 

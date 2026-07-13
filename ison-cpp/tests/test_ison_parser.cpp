@@ -394,6 +394,201 @@ id value
     ASSERT_EQ(doc1["test"].size(), doc2["test"].size());
 }
 
+TEST(isonl_escaping_integrity) {
+    // Regression: delimiter/escape chars in values must survive a round-trip
+    std::vector<std::string> adversarial = {
+        "C:\\path\\",             // trailing backslash used to desync quote tracking
+        "\\",
+        "a\\",
+        "ends with backslash \\",
+        "pipe|inside",
+        "quote \" inside",
+        "mix \\\" of both",
+        "line1\nline2",
+        "tab\there",
+        "cr\rhere",
+        "crlf\r\nend",
+        "123",
+        "true",
+        ":ref",
+        "",
+        "\\|",
+        " leading and trailing ",
+    };
+
+    Document doc;
+    Block block("table", "adversarial");
+    block.fields = {"v"};
+    for (size_t i = 0; i < adversarial.size(); ++i) {
+        Row row;
+        row["v"] = adversarial[i];
+        block.rows.push_back(row);
+    }
+    doc.blocks.push_back(block);
+
+    auto parsed = loads_isonl(dumps_isonl(doc));
+    ASSERT_EQ(parsed.size(), 1);
+    ASSERT_EQ(parsed.blocks[0].rows.size(), adversarial.size());
+    for (size_t i = 0; i < adversarial.size(); ++i) {
+        const Value& v = parsed.blocks[0].rows[i].at("v");
+        ASSERT(is_string(v));
+        ASSERT_EQ(as_string(v), adversarial[i]);
+    }
+
+    // Compound case: a quoted value ending in an escaped backslash followed by
+    // a pipe-bearing value on the same line — the exact shape that desynced
+    // quote tracking and corrupted section splitting
+    std::vector<Row> compound_rows;
+    {
+        Row row;
+        row["a"] = std::string("x \\");
+        row["b"] = std::string("y|z");
+        compound_rows.push_back(row);
+    }
+    {
+        Row row;
+        row["a"] = std::string("x\\");
+        row["b"] = std::string("y|z");
+        compound_rows.push_back(row);
+    }
+
+    Document doc2;
+    Block block2("table", "compound");
+    block2.fields = {"a", "b"};
+    block2.rows = compound_rows;
+    doc2.blocks.push_back(block2);
+
+    auto parsed2 = loads_isonl(dumps_isonl(doc2));
+    ASSERT_EQ(parsed2.blocks[0].rows.size(), compound_rows.size());
+    for (size_t i = 0; i < compound_rows.size(); ++i) {
+        const Value& a = parsed2.blocks[0].rows[i].at("a");
+        const Value& b = parsed2.blocks[0].rows[i].at("b");
+        ASSERT(is_string(a));
+        ASSERT(is_string(b));
+        ASSERT_EQ(as_string(a), as_string(compound_rows[i].at("a")));
+        ASSERT_EQ(as_string(b), as_string(compound_rows[i].at("b")));
+    }
+}
+
+TEST(isonl_roundtrip_property) {
+    // Property test: random strings over a hostile alphabet must round-trip.
+    // Deterministic LCG so failures are reproducible without <random>.
+    const char* alphabet[] = {
+        "a", "b", " ", "|", "\"", "\\", "\n", "\r", "\t",
+        ".", ":", "#", "0", "1", "true", "null"
+    };
+    const int alphabet_size = static_cast<int>(sizeof(alphabet) / sizeof(alphabet[0]));
+
+    uint64_t state = 20260713ULL;
+    auto next_int = [&state](int lo, int hi) -> int {
+        state = (state * 1103515245ULL + 12345ULL) % 2147483648ULL;
+        return lo + static_cast<int>(state % static_cast<uint64_t>(hi - lo + 1));
+    };
+
+    for (int trial = 0; trial < 300; ++trial) {
+        int num_fields = next_int(1, 4);
+        std::vector<std::string> fields;
+        for (int i = 0; i < num_fields; ++i) {
+            fields.push_back("f" + std::to_string(i));
+        }
+
+        int num_rows = next_int(1, 3);
+        std::vector<Row> rows;
+        for (int r = 0; r < num_rows; ++r) {
+            Row row;
+            for (int f = 0; f < num_fields; ++f) {
+                int len = next_int(0, 12);
+                std::string value;
+                for (int k = 0; k < len; ++k) {
+                    value += alphabet[next_int(0, alphabet_size - 1)];
+                }
+                row[fields[f]] = value;
+            }
+            rows.push_back(row);
+        }
+
+        Document doc;
+        Block block("table", "t");
+        block.fields = fields;
+        block.rows = rows;
+        doc.blocks.push_back(block);
+
+        std::string out = dumps_isonl(doc);
+        auto parsed = loads_isonl(out);
+
+        ASSERT_EQ(parsed.size(), 1);
+        ASSERT_EQ(parsed.blocks[0].rows.size(), rows.size());
+        for (size_t r = 0; r < rows.size(); ++r) {
+            for (size_t f = 0; f < fields.size(); ++f) {
+                const Value& got = parsed.blocks[0].rows[r].at(fields[f]);
+                const std::string& expected = as_string(rows[r].at(fields[f]));
+                if (!is_string(got) || as_string(got) != expected) {
+                    throw std::runtime_error(
+                        "trial " + std::to_string(trial) + " row " + std::to_string(r) +
+                        " field " + fields[f] + ": round-trip mismatch, line: " + out);
+                }
+            }
+        }
+    }
+}
+
+TEST(isonl_envelope_validation) {
+    // Envelope values that can't be serialized must be rejected, not corrupted
+    auto make_doc = [](const std::string& kind, const std::string& name,
+                       const std::vector<std::string>& fields) {
+        Document doc;
+        Block block(kind, name);
+        block.fields = fields;
+        Row row;
+        for (size_t i = 0; i < fields.size(); ++i) {
+            row[fields[i]] = 1;
+        }
+        block.rows.push_back(row);
+        doc.blocks.push_back(block);
+        return doc;
+    };
+
+    struct EnvelopeCase {
+        std::string kind;
+        std::string name;
+        std::vector<std::string> fields;
+    };
+    std::vector<EnvelopeCase> bad_cases = {
+        {"ta|ble", "t", {"id"}},
+        {"ta ble", "t", {"id"}},
+        {"t.able", "t", {"id"}},
+        {"#table", "t", {"id"}},
+        {"",       "t", {"id"}},
+        {"table", "na|me",  {"id"}},
+        {"table", "na\nme", {"id"}},
+        {"table", "na me",  {"id"}},
+        {"table", "",       {"id"}},
+        {"table", "t", {"bad field"}},
+        {"table", "t", {"bad|field"}},
+        {"table", "t", {""}},
+    };
+
+    for (size_t i = 0; i < bad_cases.size(); ++i) {
+        const EnvelopeCase& c = bad_cases[i];
+        bool threw = false;
+        try {
+            dumps_isonl(make_doc(c.kind, c.name, c.fields));
+        } catch (const ISONError&) {
+            threw = true;
+        }
+        if (!threw) {
+            throw std::runtime_error(
+                "should have rejected envelope kind='" + c.kind +
+                "' name='" + c.name + "'");
+        }
+    }
+
+    // Dots in the block NAME are legal — the parser splits on the first dot
+    auto parsed = loads_isonl(dumps_isonl(make_doc("table", "v1.2", {"id"})));
+    ASSERT_EQ(parsed.blocks[0].kind, "table");
+    ASSERT_EQ(parsed.blocks[0].name, "v1.2");
+}
+
 // =============================================================================
 // JSON Conversion Tests
 // =============================================================================
@@ -559,6 +754,9 @@ int main() {
     RUN_TEST(parse_isonl);
     RUN_TEST(serialize_isonl);
     RUN_TEST(ison_to_isonl_conversion);
+    RUN_TEST(isonl_escaping_integrity);
+    RUN_TEST(isonl_roundtrip_property);
+    RUN_TEST(isonl_envelope_validation);
 
     // JSON
     RUN_TEST(to_json);

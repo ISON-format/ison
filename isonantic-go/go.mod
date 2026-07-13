@@ -1,10 +1,10 @@
-module github.com/maheshvaikri-code/ison/isonantic-go
+module github.com/ISON-format/ison/isonantic-go
 
 go 1.21
 
 require github.com/stretchr/testify v1.8.4
 
-replace github.com/maheshvaikri-code/ison/ison-go => ../ison-go
+replace github.com/ISON-format/ison/ison-go => ../ison-go
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect

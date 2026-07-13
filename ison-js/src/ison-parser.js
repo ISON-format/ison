@@ -240,6 +240,7 @@
             'n': '\n',
             't': '\t',
             'r': '\r',
+            '|': '|',
         };
 
         constructor(line, lineNum = 0) {
@@ -779,40 +780,213 @@
     /**
      * Create an ISON Document from a plain JavaScript object.
      * @param {Object} data - Object with block names as keys
+     * @param {Object} options - Conversion options
+     * @param {boolean} options.flatten - Flatten nested objects into separate tables (default: true)
+     * @param {boolean} options.autoRefs - Auto-generate references for relationships (default: true)
      * @returns {Document} Document object
      */
-    function fromDict(data) {
-        const doc = new Document();
+    function fromDict(data, options = {}) {
+        const opts = {
+            flatten: options.flatten !== false,
+            autoRefs: options.autoRefs !== false
+        };
 
+        const doc = new Document();
+        const extraBlocks = []; // For flattened nested structures
+        let refCounter = 1;
+
+        // Helper: Check if value is a nested object (not array, not null)
+        const isNestedObject = (val) => {
+            return val !== null && typeof val === 'object' && !Array.isArray(val);
+        };
+
+        // Helper: Check if value is an array of objects
+        const isArrayOfObjects = (val) => {
+            return Array.isArray(val) && val.length > 0 && typeof val[0] === 'object' && val[0] !== null;
+        };
+
+        // Helper: Check if value is an array of primitives
+        const isArrayOfPrimitives = (val) => {
+            return Array.isArray(val) && (val.length === 0 || typeof val[0] !== 'object');
+        };
+
+        // Helper: Add or update an extra block
+        const addToExtraBlock = (blockName, blockKind, fields, row) => {
+            let existingBlock = extraBlocks.find(b => b.name === blockName);
+            if (existingBlock) {
+                // Add new fields if they don't exist
+                for (const k of fields) {
+                    if (!existingBlock.fields.includes(k)) {
+                        existingBlock.fields.push(k);
+                    }
+                }
+                existingBlock.rows.push(row);
+            } else {
+                extraBlocks.push(new Block(blockKind, blockName, [...fields], [row]));
+            }
+        };
+
+        // Helper: Recursively flatten nested structures
+        const flattenValue = (key, value, parentName, rowId, parentRef) => {
+            const nestedName = `${parentName}_${key}`;
+
+            if (isNestedObject(value)) {
+                // Nested object - create separate block and recurse
+                const nestedRow = {};
+                nestedRow[`${parentName}_id`] = parentRef;
+
+                const nestedFields = [`${parentName}_id`];
+
+                for (const [nk, nv] of Object.entries(value)) {
+                    if (isNestedObject(nv) || isArrayOfObjects(nv) || isArrayOfPrimitives(nv)) {
+                        // Recurse for deeper nesting
+                        flattenValue(nk, nv, nestedName, rowId, parentRef);
+                    } else {
+                        nestedRow[nk] = nv;
+                        nestedFields.push(nk);
+                    }
+                }
+
+                // Only add if there are fields beyond the reference
+                if (Object.keys(nestedRow).length > 1) {
+                    addToExtraBlock(nestedName, 'table', nestedFields, nestedRow);
+                }
+
+                return { skip: true };
+
+            } else if (isArrayOfObjects(value)) {
+                // Array of objects - create separate table
+                for (const item of value) {
+                    const nestedRow = {};
+                    nestedRow[`${parentName}_id`] = parentRef;
+                    const nestedFields = [`${parentName}_id`];
+
+                    for (const [nk, nv] of Object.entries(item)) {
+                        if (isNestedObject(nv) || isArrayOfObjects(nv) || isArrayOfPrimitives(nv)) {
+                            // Recurse for deeper nesting
+                            flattenValue(nk, nv, nestedName, rowId, parentRef);
+                        } else {
+                            nestedRow[nk] = nv;
+                            if (!nestedFields.includes(nk)) nestedFields.push(nk);
+                        }
+                    }
+
+                    if (Object.keys(nestedRow).length > 1) {
+                        addToExtraBlock(nestedName, 'table', nestedFields, nestedRow);
+                    }
+                }
+
+                return { skip: true };
+
+            } else if (isArrayOfPrimitives(value) && value.length > 0) {
+                // Array of primitives - create separate table with value column
+                for (const item of value) {
+                    const nestedRow = {};
+                    nestedRow[`${parentName}_id`] = parentRef;
+                    nestedRow['value'] = item;
+                    addToExtraBlock(nestedName, 'table', [`${parentName}_id`, 'value'], nestedRow);
+                }
+
+                return { skip: true };
+            }
+
+            // Not a nested structure - keep the value
+            return { skip: false, value: value };
+        };
+
+        // Helper: Flatten a row, extracting nested structures
+        const flattenRow = (row, parentName, rowId) => {
+            const flatRow = {};
+            const parentRef = new Reference(rowId);
+
+            for (const [key, value] of Object.entries(row)) {
+                if (opts.flatten && (isNestedObject(value) || isArrayOfObjects(value) || isArrayOfPrimitives(value))) {
+                    const result = flattenValue(key, value, parentName, rowId, parentRef);
+                    if (!result.skip) {
+                        flatRow[key] = result.value;
+                    }
+                    // Skip - field is flattened to separate table
+                } else if (value === null || value === undefined) {
+                    flatRow[key] = null;
+                } else {
+                    flatRow[key] = value;
+                }
+            }
+
+            return flatRow;
+        };
+
+        // Process main data
         for (const [name, content] of Object.entries(data)) {
             let blockKind, fields, rows;
 
             if (Array.isArray(content)) {
-                if (content.length > 0 && typeof content[0] === 'object') {
-                    // Collect all unique fields from all objects in array
+                if (content.length > 0 && Array.isArray(content[0])) {
+                    // Array of arrays - create table with generated column names
+                    const maxCols = Math.max(...content.map(row => row.length));
+
+                    // Generate column names: col1, col2, col3...
+                    fields = Array.from({ length: maxCols }, (_, i) => `col${i + 1}`);
+                    rows = content.map(row => {
+                        const obj = {};
+                        fields.forEach((f, i) => obj[f] = row[i] !== undefined ? row[i] : null);
+                        return obj;
+                    });
+                    blockKind = 'table';
+
+                } else if (content.length > 0 && typeof content[0] === 'object' && content[0] !== null) {
+                    // Table: array of objects
                     const fieldSet = new Set();
-                    for (const item of content) {
+                    const processedRows = [];
+
+                    for (let i = 0; i < content.length; i++) {
+                        const item = content[i];
                         if (typeof item === 'object' && item !== null) {
-                            for (const key of Object.keys(item)) {
+                            // Determine row ID
+                            const rowId = item.id !== undefined ? item.id : refCounter++;
+
+                            // Flatten the row
+                            const flatRow = flattenRow(item, name, rowId);
+
+                            for (const key of Object.keys(flatRow)) {
                                 fieldSet.add(key);
                             }
+                            processedRows.push(flatRow);
                         }
                     }
+
                     fields = Array.from(fieldSet);
-                    rows = content;
+                    rows = processedRows;
+                    blockKind = 'table';
+
+                } else if (content.length > 0) {
+                    // Array of primitives - create a simple table
+                    fields = ['value'];
+                    rows = content.map(v => ({ value: v }));
+                    blockKind = 'table';
                 } else {
                     continue;
                 }
-                blockKind = 'table';
             } else if (typeof content === 'object' && content !== null) {
-                fields = Object.keys(content);
-                rows = [content];
+                // Object: key-value pairs
+                const rowId = content.id !== undefined ? content.id : name;
+                const flatRow = flattenRow(content, name, rowId);
+                fields = Object.keys(flatRow);
+                rows = [flatRow];
                 blockKind = 'object';
             } else {
+                // Skip primitives at top level
                 continue;
             }
 
-            const block = new Block(blockKind, name, fields, rows);
+            if (fields.length > 0 && rows.length > 0) {
+                const block = new Block(blockKind, name, fields, rows);
+                doc.blocks.push(block);
+            }
+        }
+
+        // Add extra blocks from flattened nested structures
+        for (const block of extraBlocks) {
             doc.blocks.push(block);
         }
 
@@ -822,12 +996,17 @@
     /**
      * Convert JSON to ISON string.
      * @param {string|Object} json - JSON string or object
+     * @param {Object} options - Conversion options
+     * @param {boolean} options.flatten - Flatten nested objects (default: true)
+     * @param {boolean} options.autoRefs - Auto-generate references (default: true)
+     * @param {boolean} options.alignColumns - Align columns in output (default: true)
      * @returns {string} ISON formatted string
      */
-    function jsonToISON(json) {
+    function jsonToISON(json, options = {}) {
         const data = typeof json === 'string' ? JSON.parse(json) : json;
-        const doc = fromDict(data);
-        return dumps(doc);
+        const doc = fromDict(data, options);
+        const alignColumns = options.alignColumns !== false;
+        return dumps(doc, alignColumns);
     }
 
     /**
@@ -952,11 +1131,21 @@
             const sections = [];
             let current = [];
             let inQuotes = false;
+            let i = 0;
 
-            for (let i = 0; i < line.length; i++) {
+            while (i < line.length) {
                 const char = line[i];
 
-                if (char === '"' && (i === 0 || line[i - 1] !== '\\')) {
+                if (inQuotes && char === '\\' && i + 1 < line.length) {
+                    // Consume the escape pair so an escaped backslash before a
+                    // closing quote ("foo\\") can't desync the quote tracking
+                    current.push(char);
+                    current.push(line[i + 1]);
+                    i += 2;
+                    continue;
+                }
+
+                if (char === '"') {
                     inQuotes = !inQuotes;
                     current.push(char);
                 } else if (char === '|' && !inQuotes) {
@@ -965,6 +1154,8 @@
                 } else {
                     current.push(char);
                 }
+
+                i++;
             }
 
             // Add the last section
@@ -1035,6 +1226,48 @@
      * Serializer for ISONL format
      */
     class ISONLSerializer {
+        // Characters that would corrupt the line structure if they appeared
+        // raw in the envelope (kind, name, or field names)
+        static ENVELOPE_FORBIDDEN = ['|', '"', '\\', ' ', '\t', '\n', '\r'];
+
+        /**
+         * Reject kind/name/fields that cannot survive an ISONL round-trip
+         */
+        static _validateEnvelope(block) {
+            for (const [label, value] of [['kind', block.kind], ['name', block.name]]) {
+                if (!value) {
+                    throw new ISONError(`ISONL block ${label} must be non-empty`);
+                }
+                if (ISONLSerializer.ENVELOPE_FORBIDDEN.some(c => value.includes(c))) {
+                    throw new ISONError(
+                        `ISONL block ${label} ${JSON.stringify(value)} contains characters that ` +
+                        `cannot be serialized (pipe, quote, backslash, or whitespace)`
+                    );
+                }
+            }
+            if (block.kind.includes('.')) {
+                throw new ISONError(
+                    `ISONL block kind ${JSON.stringify(block.kind)} must not contain '.'`
+                );
+            }
+            if (block.kind.startsWith('#')) {
+                throw new ISONError(
+                    `ISONL block kind ${JSON.stringify(block.kind)} must not start with '#'`
+                );
+            }
+            for (const field of block.fields) {
+                if (!field) {
+                    throw new ISONError('ISONL field names must be non-empty');
+                }
+                if (ISONLSerializer.ENVELOPE_FORBIDDEN.some(c => field.includes(c))) {
+                    throw new ISONError(
+                        `ISONL field name ${JSON.stringify(field)} contains characters that ` +
+                        `cannot be serialized (pipe, quote, backslash, or whitespace)`
+                    );
+                }
+            }
+        }
+
         /**
          * Serialize a Document to ISONL string.
          * Each row becomes a separate line.
@@ -1045,6 +1278,7 @@
             const lines = [];
 
             for (const block of doc.blocks) {
+                ISONLSerializer._validateEnvelope(block);
                 const header = `${block.kind}.${block.name}`;
                 const fieldsStr = block.fields.join(' ');
 
@@ -1102,6 +1336,8 @@
                 s.includes('\t') ||
                 s.includes('"') ||
                 s.includes('\n') ||
+                s.includes('\r') ||
+                s.includes('\\') ||
                 s.includes('|') ||
                 s === 'true' ||
                 s === 'false' ||
@@ -1210,7 +1446,7 @@
         isonlStream,
 
         // Version
-        version: '1.0.1'
+        version: '1.0.2'
     };
 
     // Export for different environments
