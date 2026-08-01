@@ -1,0 +1,24 @@
+table.emoji_test
+id emoji_😀 name
+101 smiley Test
+
+table.no_id
+age city name
+30 "New York" Charlie
+
+table.scrambled
+id active email name score
+1 true alice@example.com Alice 95.5
+2 false bob@example.com Bob 87.3
+
+table.single_row
+id value
+9999 only_one
+
+table.users_order_1
+id email name
+1001 david@example.com David
+
+table.users_order_2
+id email name
+1002 eve@example.com Eve

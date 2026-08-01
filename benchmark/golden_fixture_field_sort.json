@@ -1,0 +1,53 @@
+{
+  "scrambled": [
+    {
+      "score": 95.5,
+      "active": true,
+      "id": 1,
+      "email": "alice@example.com",
+      "name": "Alice"
+    },
+    {
+      "name": "Bob",
+      "email": "bob@example.com",
+      "score": 87.3,
+      "id": 2,
+      "active": false
+    }
+  ],
+  "no_id": [
+    {
+      "city": "New York",
+      "age": 30,
+      "name": "Charlie"
+    }
+  ],
+  "emoji_test": [
+    {
+      "id": 101,
+      "emoji_😀": "smiley",
+      "name": "Test"
+    }
+  ],
+  "users_order_1": [
+    {
+      "id": 1001,
+      "name": "David",
+      "email": "david@example.com"
+    }
+  ],
+  "users_order_2": [
+    {
+      "email": "eve@example.com",
+      "name": "Eve",
+      "id": 1002
+    }
+  ],
+  "empty": [],
+  "single_row": [
+    {
+      "id": 9999,
+      "value": "only_one"
+    }
+  ]
+}
