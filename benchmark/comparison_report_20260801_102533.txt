@@ -9,12 +9,25 @@ FINDINGS (9 runs, 180 total iterations)
      All three orders produce identical 8,753-byte output: PASS
 
    Field order within records:
-     Different input field orders produce different output: CAVEAT
+     CAVEAT: Test passes only because Python dicts (3.7+) preserve insertion order.
+
      FINDING: dumps_canonical does not sort fields alphabetically; it preserves
-       the Document field order from the parser, which depends on input order.
-     RECOMMENDATION: For true content-addressed canonicalization (required for
-       HashMap/dict iteration order independence across implementations), fields
-       should be sorted alphabetically as well as blocks and rows.
+       the Document field order from the parser. Different input field orders
+       produce different output.
+
+     LATENT PARITY BUG: A Rust HashMap or Go map port would emit fields in
+       iteration order, causing byte-identity to fail on first cross-language run.
+
+     RECOMMENDATION: Sort fields alphabetically because implementation-order
+       independence is the whole point of canonical form. This is necessary for
+       content-addressed use, but more fundamentally: canonical output must be
+       byte-identical across all implementations regardless of their iteration
+       order semantics.
+
+     TRADEOFF: Canonical form will lose readable column ordering (which is a
+       stated ISON design goal). This is acceptable since canonical output is
+       for machines, but dumps_canonical should be documented as visibly
+       different from dumps.
 
 2. AGGREGATE STATISTICS
    Format         Median       Mean      Stdev        CV%
@@ -34,12 +47,16 @@ FINDINGS (9 runs, 180 total iterations)
    ISON:    8,753 bytes (66% smaller, 2.90x compression)
    ISONCS:  8,753 bytes (same as ISON)
 
-   TOKEN EFFICIENCY (measured separately):
-   Byte ratio: 2.90x (JSON vs ISON)
-   Token ratio: 2.35x (separately measured on comparable data)
+   TOKEN EFFICIENCY:
+   Byte ratio: 2.90x (JSON vs ISON), 65.5% reduction
+   Token ratio: 2.35x (separately measured on synthetic 350-record data),
+     57.4% reduction
    NOTE: Byte ratio ≠ token ratio due to JSON's punctuation overhead
      (JSON: 3.32 chars/token vs ISON: 3.65 chars/token)
-   Actual token efficiency likely better than byte ratio suggests.
+
+   CAVEAT: Token measurement is from separate synthetic test, not from actual
+   benchmark outputs. Should measure tiktoken over real 8,753/25,401-byte
+   outputs before quoting as definitive number.
 
 5. TIMING METHODOLOGY
    This benchmark measures serialization only (data generation excluded).
@@ -53,9 +70,11 @@ FINDINGS (9 runs, 180 total iterations)
 
 6. VERDICT
    ✓ Canonicalization PASS (blocks stable across insertion order)
-   ! Canonicalization CAVEAT (fields not sorted; affects content-addressed use)
+   ! Canonicalization CRITICAL (fields not sorted; latent parity bug in
+       cross-language implementations; Python dict preservation masks issue)
    + ISONCS overhead: +4.57% average (real effect, small magnitude 2.4σ)
-   ✓ Compression: 66% smaller in bytes, ~70% smaller in tokens (estimated)
+   ✓ Compression: 65.5% smaller in bytes; ~57% smaller in tokens (separately
+       measured; needs verification on actual benchmark outputs)
    + Speed gap: JSON 4.4x faster due to C implementation vs Python, not format
    ? Prompt caching: NOT TESTED (separate ADR-004; prefix stability requires
        ordering changes and is measured separately; 76.5% invalidation on append
