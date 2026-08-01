@@ -22,11 +22,11 @@
       "name": "Charlie"
     }
   ],
-  "emoji_test": [
+  "utf16_divergence": [
     {
       "id": 101,
-      "emoji_😀": "smiley",
-      "name": "Test"
+      "😀field": "non-BMP emoji (U+1F600 starts 0xF0 in UTF-8)",
+      "Ａfield": "fullwidth A (U+FF21 is 0xEF in UTF-8)"
     }
   ],
   "users_order_1": [

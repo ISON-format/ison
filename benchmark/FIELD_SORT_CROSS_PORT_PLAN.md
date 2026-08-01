@@ -38,16 +38,28 @@ One input file (JSON), one expected-output file (ISON canonical), byte-compared 
    }
    ```
 
-3. **Emoji field name** (CRITICAL for UTF-16 vs UTF-8 divergence):
+3. **UTF-16 vs UTF-8 divergence** (CRITICAL — catches all three UTF-16 implementations):
    ```json
    {
-     "emoji_test": [{"id": 1, "emoji_😀": "smiley", "name": "Test"}]
+     "utf16_divergence": [
+       {
+         "id": 1,
+         "😀field": "non-BMP emoji U+1F600",
+         "Ａfield": "fullwidth A U+FF21"
+       }
+     ]
    }
    ```
-   Expected field order: `[id, emoji_😀, name]` (UTF-8 byte order)
-   - Rust and Python: emoji_😀 (0xF0...) sorts after "name" (0x6E...)? NO — check bytes
-   - JavaScript (if using `<` instead of `TextEncoder`): UTF-16 code units produce different order
-   - This case **catches a JS implementation that skips UTF-8 encoding**
+   Expected field order: `[id, Ａfield, 😀field]` (UTF-8 byte order)
+   
+   **Why this catches the bug:**
+   - UTF-8: Ａ (0xEF...) < 😀 (0xF0...) → Ａfield comes first
+   - UTF-16: 😀 (surrogate 0xD8...) < Ａ (0xFF21) → 😀field comes first
+   - JavaScript/TypeScript using `<`: Produces `[id, 😀field, Ａfield]` (WRONG)
+   - C# using `CompareOrdinal`: Produces `[id, 😀field, Ａfield]` (WRONG)
+   - Python, Rust, Go, C++ using byte comparison: All produce `[id, Ａfield, 😀field]` (CORRECT)
+   
+   This pair diverges ONLY in UTF-16 languages.
 
 4. **Same column set, different discovery order** (table signature independence):
    ```json
@@ -67,13 +79,16 @@ One input file (JSON), one expected-output file (ISON canonical), byte-compared 
 - Strongest independent validation that the fix is real
 - If Rust produces byte-identical output to Python, the fix is solid
 
-**JavaScript / TypeScript third**:
-- UTF-16 vs UTF-8 divergence (the emoji case must be tested)
-- Most likely to fail if TextEncoder is skipped
-- Run these together since they share the divergence risk
+**JavaScript / TypeScript / C# third** (UTF-16 hazard group):
+- All three use UTF-16 encoding natively
+- All three are caught by the `Ａfield` vs `😀field` divergence
+- Most likely to fail if TextEncoder (JS/TS) or explicit byte comparison (C#) is skipped
+- Run these together since they share the UTF-16 divergence risk
+- C# `CompareOrdinal` uses UTF-16 code units, not UTF-8 bytes — must use `System.Text.Encoding.UTF8.GetBytes()`
 
-**C++, C#, Go last**:
-- Unlikely to surprise (they have deterministic iteration)
+**Go and C++ last**:
+- Code-point order and UTF-8 byte order are identical by design — no divergence risk
+- Unlikely to surprise (deterministic iteration + UTF-8 native)
 - Validate "the fix works across the board" rather than "the fix is real"
 
 ## Spec Additions

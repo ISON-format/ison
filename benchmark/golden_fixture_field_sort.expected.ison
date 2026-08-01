@@ -1,7 +1,3 @@
-table.emoji_test
-id emoji_😀 name
-101 smiley Test
-
 table.no_id
 age city name
 30 "New York" Charlie
@@ -22,3 +18,7 @@ id email name
 table.users_order_2
 id email name
 1002 eve@example.com Eve
+
+table.utf16_divergence
+id Ａfield 😀field
+101 "fullwidth A (U+FF21 is 0xEF in UTF-8)" "non-BMP emoji (U+1F600 starts 0xF0 in UTF-8)"
