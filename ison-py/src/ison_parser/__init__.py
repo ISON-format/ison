@@ -662,31 +662,39 @@ class Serializer:
 
     @classmethod
     def _serialize_block_canonical(cls, block: Block) -> str:
-        """Serialize a single block in canonical form (sorted rows, no alignment)"""
+        """Serialize a single block in canonical form (sorted rows and fields, no alignment)"""
         lines = []
 
         # Header
         lines.append(f"{block.kind}.{block.name}")
 
+        # Sort fields: id first (if present), then alphabetically by UTF-8 bytes
+        sorted_fields = cls._sort_fields_canonical(block.fields)
+
         # Fields (with type annotations if present)
         if block.field_info:
             field_strs = []
-            for fi in block.field_info:
-                if fi.type:
-                    field_strs.append(f"{fi.name}:{fi.type}")
+            for field_name in sorted_fields:
+                # Find field_info for this field
+                fi = next((f for f in block.field_info if f.name == field_name), None)
+                if fi:
+                    if fi.type:
+                        field_strs.append(f"{fi.name}:{fi.type}")
+                    else:
+                        field_strs.append(fi.name)
                 else:
-                    field_strs.append(fi.name)
+                    field_strs.append(field_name)
             lines.append(' '.join(field_strs))
         else:
-            lines.append(' '.join(block.fields))
+            lines.append(' '.join(sorted_fields))
 
-        # Sort rows ordinal-string by first column value (key)
-        sorted_rows = cls._sort_rows_by_key(block)
+        # Sort rows ordinal-string by first column value (using canonical field order)
+        sorted_rows = cls._sort_rows_by_key_canonical(block, sorted_fields)
 
         # Data rows (no alignment, single-space delimiter)
         for row in sorted_rows:
             values = []
-            for field in block.fields:
+            for field in sorted_fields:
                 value = cls._get_nested_value(row, field)
                 str_value = cls._value_to_ison(value)
                 values.append(str_value)
@@ -699,6 +707,52 @@ class Serializer:
             lines.append(block.summary)
 
         return '\n'.join(lines)
+
+    @classmethod
+    def _sort_fields_canonical(cls, fields: list[str]) -> list[str]:
+        """Sort fields for canonical form: id first, then alphabetically by UTF-8 bytes.
+
+        Rationale:
+        - Canonical form must be order-independent across implementations
+        - Python dict insertion-order preservation masks unordered iteration in
+          Rust HashMap and Go map, causing cross-language byte-identity to fail
+        - Sorting fields explicitly ensures byte-identical output regardless of
+          how the parser discovered them
+        - 'id' hoisted first (anchor for :type:id references); remaining fields
+          sorted by UTF-8 byte comparison (ordinal, not Unicode code point)
+        """
+        # Partition fields: id vs others
+        id_fields = [f for f in fields if f == "id"]
+        other_fields = [f for f in fields if f != "id"]
+
+        # Sort other fields by UTF-8 bytes (not by Unicode code points)
+        # Using bytes comparison ensures the same rule across all implementations
+        sorted_others = sorted(other_fields, key=lambda f: f.encode("utf-8"))
+
+        # Return: id first (if present), then sorted others
+        return id_fields + sorted_others
+
+    @classmethod
+    def _sort_rows_by_key_canonical(cls, block: Block, sorted_fields: list[str]) -> list[dict]:
+        """Sort rows ordinal-string by first column value (key), using canonical field order.
+
+        The row key must be built from the *canonical* field order, not the input
+        order, or row sorting depends on field order (identical bug one level up).
+        """
+        if not block.rows or not sorted_fields:
+            return block.rows
+
+        key_field = sorted_fields[0]
+
+        def row_sort_key(row):
+            key_value = cls._get_nested_value(row, key_field)
+            # Rows with null key sort to the end
+            if key_value is None:
+                return (1, '')  # (sort_group, value)
+            # Convert key to string for ordinal comparison
+            return (0, str(key_value))
+
+        return sorted(block.rows, key=row_sort_key)
 
     @classmethod
     def _sort_rows_by_key(cls, block: Block) -> list[dict]:

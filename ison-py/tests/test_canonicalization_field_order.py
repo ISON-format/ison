@@ -123,16 +123,20 @@ def test_field_order_independence_large():
 
 
 def test_expected_sort_order():
-    """After fix: verify that fields are sorted as [id, ...alphabetical...]"""
+    """After fix: verify that fields are sorted as [id, ...alphabetical...]
+
+    Input fields (in input order): name, email, id, active, score
+    Expected output (id first, then alphabetical): id, active, email, name, score
+    """
 
     data = {
         "records": [
             {
-                "name": "Alice",
-                "email": "a@ex.com",
-                "id": 1,
-                "active": True,
-                "score": 95.5,
+                "name": "Alice",          # Would be 4th alphabetically (n)
+                "email": "a@ex.com",      # Would be 2nd alphabetically (e)
+                "id": 1,                  # Hoisted to first
+                "active": True,           # Would be 1st alphabetically (a)
+                "score": 95.5,            # Would be 3rd alphabetically (s)
             }
         ]
     }
@@ -140,22 +144,83 @@ def test_expected_sort_order():
     doc = ison_parser.from_dict(data, auto_refs=True, smart_order=True)
     canonical = ison_parser.dumps_canonical(doc)
 
-    # Expected field order: id, active, email, name, score
-    # (id first, then alphabetical)
-    expected_header = "table.records\nid active email name score"
+    # Input order:     [name, email, id, active, score]
+    # Expected order:  [id, active, email, name, score]
+    # Rule: id first, then sort remaining fields alphabetically by UTF-8 bytes
 
-    lines = canonical.split('\n')
-    actual_header = '\n'.join(lines[:2])
+    # Assert against literal expected string to catch subtle sort bugs
+    expected_lines = [
+        "table.records",
+        "id active email name score",
+        "1 true a@ex.com Alice 95.5"
+    ]
+    expected_output = '\n'.join(expected_lines)
 
-    print(f"Expected: {expected_header}")
-    print(f"Actual: {actual_header}")
+    # Normalize whitespace for comparison (canonical uses single space)
+    canonical_normalized = '\n'.join(
+        ' '.join(line.split()) for line in canonical.strip().split('\n')
+    )
 
-    if actual_header == expected_header:
-        print("[PASS] Fields sorted correctly (id first, then alphabetical)")
+    print(f"Input field order:    [name, email, id, active, score]")
+    print(f"Expected output:\n{expected_output}")
+    print()
+    print(f"Actual output:\n{canonical_normalized}")
+
+    if canonical_normalized == expected_output:
+        print("\n[PASS] Fields sorted correctly (id first, then alphabetical by UTF-8)")
         return True
     else:
-        print("[FAIL] Fields not in expected sort order")
+        print("\n[FAIL] Fields not in expected sort order")
+        # Show field order from actual output
+        if canonical_normalized:
+            actual_fields = canonical_normalized.split('\n')[1].split()
+            print(f"Actual field order: {actual_fields}")
         return False
+
+
+def test_table_signature_order_independence():
+    """Verify table names/signatures are order-independent.
+
+    If a table's name derives from its column set, the derivation must be
+    order-independent. Otherwise the same columns discovered in different
+    order would produce two tables (identical bug one level up).
+
+    This test checks that both field orders produce documents with identical
+    table identities (kind.name).
+    """
+
+    data_order1 = {
+        "users": [
+            {"id": 1, "name": "Alice", "email": "a@ex.com"}
+        ]
+    }
+
+    data_order2 = {
+        "users": [
+            {"email": "a@ex.com", "id": 1, "name": "Alice"}
+        ]
+    }
+
+    doc1 = ison_parser.from_dict(data_order1, auto_refs=True, smart_order=True)
+    doc2 = ison_parser.from_dict(data_order2, auto_refs=True, smart_order=True)
+
+    # Get table signatures (kind.name)
+    if doc1.blocks and doc2.blocks:
+        sig1 = f"{doc1.blocks[0].kind}.{doc1.blocks[0].name}"
+        sig2 = f"{doc2.blocks[0].kind}.{doc2.blocks[0].name}"
+
+        print(f"Field order 1 [id, name, email] -> table: {sig1}")
+        print(f"Field order 2 [email, id, name] -> table: {sig2}")
+
+        if sig1 == sig2:
+            print("[PASS] Table signatures match (order-independent)")
+            return True
+        else:
+            print("[FAIL] Table signatures differ (order-dependent - latent bug)")
+            return False
+    else:
+        print("[SKIP] Could not extract table signatures")
+        return True
 
 
 if __name__ == "__main__":
@@ -174,13 +239,18 @@ if __name__ == "__main__":
     result2 = test_field_order_independence_large()
     print()
 
-    print("TEST 3: Expected sort order (id first, then alphabetical)")
+    print("TEST 3: Expected sort order (id first, then alphabetical by UTF-8)")
     print("-" * 80)
     result3 = test_expected_sort_order()
     print()
 
+    print("TEST 4: Table signature order-independence")
+    print("-" * 80)
+    result4 = test_table_signature_order_independence()
+    print()
+
     print("=" * 80)
-    if result1 and result2 and result3:
+    if result1 and result2 and result3 and result4:
         print("ALL TESTS PASSED")
         sys.exit(0)
     else:
