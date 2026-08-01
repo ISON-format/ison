@@ -127,8 +127,12 @@ Canonical serialization sorts fields as follows:
 - Python: `sorted(fields, key=lambda f: f.encode("utf-8"))` after hoisting id
 - Rust: `as_bytes()` comparison or manual UTF-8 iteration
 - JavaScript/TypeScript: `TextEncoder` to produce byte arrays, compare byte-by-byte
-- C++: `std::vector<uint8_t>` from UTF-8 encoding, compare byte vectors
-- C#: `System.Text.Encoding.UTF8.GetBytes()`, compare byte arrays
+- C++: **CRITICAL** — Use `std::u8string` or cast to `unsigned char` for comparison. 
+  `std::string` with signed `char` treats bytes ≥ 0x80 as negative (x86), breaking
+  the byte order. Fixture catches this (Ａfield 0xEF... sorts wrong), but declare it
+  up front so implementer doesn't debug it silently.
+- C#: `System.Text.Encoding.UTF8.GetBytes()`, compare byte arrays. NOT `CompareOrdinal`
+  or default string comparison (both use UTF-16 code units).
 - Go: `[]byte(field)` comparison (Go's byte slice comparison is lexicographic)
 
 ### Table Signature / Column Set Independence
