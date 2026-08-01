@@ -1,0 +1,35 @@
+====================================================================================================
+BENCHMARK COMPARISON REPORT - PROPER STATISTICAL ANALYSIS
+====================================================================================================
+
+FINDINGS (9 runs, 180 total iterations)
+
+1. CANONICALIZATION TEST: PASS
+   Different insertion orders produce byte-identical output across all runs.
+
+2. AGGREGATE STATISTICS
+   Format         Median       Mean      Stdev        CV%
+   ---------------------------------------------
+   json            0.225ms      0.228ms      0.003ms        1.4%
+   ison            0.988ms      1.039ms      0.017ms        1.6%
+   isoncs          1.036ms      1.046ms      0.010ms        1.0%
+
+3. ISONCS OVERHEAD ANALYSIS
+   Average overhead: +4.57%
+   Overhead stdev: 1.90%
+   ISON baseline CV: 1.7%
+   Verdict: Overhead EXCEEDS noise floor - statistically significant but small effect
+
+4. OUTPUT CHARACTERISTICS
+   JSON:    25,401 bytes (baseline)
+   ISON:    8,753 bytes (66% smaller, 2.90x compression)
+   ISONCS:  8,753 bytes (same as ISON)
+
+5. VERDICT
+   - Canonicalization WORKS: different insertion orders produce identical bytes
+   - ISONCS overhead is REAL: +4.57% average, statistically significant but small
+   - Token efficiency: ISON/ISONCS are 66% smaller than JSON (2.9x compression)
+   - Speed gap: JSON is 4.4x faster due to C implementation vs Python, not format
+   - Prompt caching: NOT TESTED (76.5% invalidation on append makes unsuitable)
+
+====================================================================================================
