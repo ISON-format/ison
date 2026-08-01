@@ -922,6 +922,252 @@ impl Serializer {
 }
 
 // =============================================================================
+// Canonical Serializer
+// =============================================================================
+
+struct CanonicalSerializer;
+
+impl CanonicalSerializer {
+    fn new() -> Self {
+        Self
+    }
+
+    fn serialize(&self, doc: &Document) -> String {
+        // Sort blocks ordinal-string by kind.name
+        let mut sorted_blocks = doc.blocks.clone();
+        sorted_blocks.sort_by(|a, b| {
+            let key_a = format!("{}.{}", a.kind, a.name);
+            let key_b = format!("{}.{}", b.kind, b.name);
+            key_a.cmp(&key_b)
+        });
+
+        let parts: Vec<String> = sorted_blocks
+            .iter()
+            .map(|b| self.serialize_block_canonical(b))
+            .collect();
+        parts.join("\n\n")
+    }
+
+    fn serialize_isonl(&self, doc: &Document) -> Result<String> {
+        let mut lines = Vec::new();
+
+        // Sort blocks ordinal-string by kind.name
+        let mut sorted_blocks = doc.blocks.clone();
+        sorted_blocks.sort_by(|a, b| {
+            let key_a = format!("{}.{}", a.kind, a.name);
+            let key_b = format!("{}.{}", b.kind, b.name);
+            key_a.cmp(&key_b)
+        });
+
+        for block in &sorted_blocks {
+            validate_isonl_envelope(block)?;
+            let header = format!("{}.{}", block.kind, block.name);
+
+            // Serialize field definitions - use field_info if available, otherwise use fields directly
+            let fields: Vec<String> = if !block.field_info.is_empty() {
+                block
+                    .field_info
+                    .iter()
+                    .map(|fi| {
+                        if let Some(ref ft) = fi.field_type {
+                            format!("{}:{}", fi.name, ft)
+                        } else {
+                            fi.name.clone()
+                        }
+                    })
+                    .collect()
+            } else {
+                block.fields.clone()
+            };
+            let fields_str = fields.join(" ");
+
+            // Sort rows ordinal-string by first column value (key)
+            let mut sorted_rows = block.rows.clone();
+            if !block.fields.is_empty() {
+                let key_field = &block.fields[0];
+                sorted_rows.sort_by(|a, b| {
+                    let val_a = a.get(key_field);
+                    let val_b = b.get(key_field);
+
+                    // Null values (missing or Value::Null) sort to the end
+                    let is_null_a = val_a.is_none() || matches!(val_a, Some(Value::Null));
+                    let is_null_b = val_b.is_none() || matches!(val_b, Some(Value::Null));
+
+                    match (is_null_a, is_null_b) {
+                        (true, true) => std::cmp::Ordering::Equal,
+                        (true, false) => std::cmp::Ordering::Greater,
+                        (false, true) => std::cmp::Ordering::Less,
+                        (false, false) => {
+                            // Both are non-null, compare as strings
+                            let str_a = self.value_to_string(val_a.unwrap());
+                            let str_b = self.value_to_string(val_b.unwrap());
+                            str_a.cmp(&str_b)
+                        }
+                    }
+                });
+            }
+
+            // Serialize each row
+            for row in &sorted_rows {
+                let values: Vec<String> = block
+                    .fields
+                    .iter()
+                    .map(|f| {
+                        row.get(f)
+                            .map(|v| self.serialize_value_canonical(v))
+                            .unwrap_or_else(|| "null".to_string())
+                    })
+                    .collect();
+                lines.push(format!("{}|{}|{}", header, fields_str, values.join(" ")));
+            }
+        }
+
+        Ok(lines.join("\n"))
+    }
+
+    fn serialize_block_canonical(&self, block: &Block) -> String {
+        let mut lines = Vec::new();
+
+        // Header
+        lines.push(format!("{}.{}", block.kind, block.name));
+
+        // Fields with types - use field_info if available, otherwise use fields directly
+        let field_defs: Vec<String> = if !block.field_info.is_empty() {
+            block
+                .field_info
+                .iter()
+                .map(|fi| {
+                    if let Some(ref ft) = fi.field_type {
+                        format!("{}:{}", fi.name, ft)
+                    } else {
+                        fi.name.clone()
+                    }
+                })
+                .collect()
+        } else {
+            block.fields.clone()
+        };
+        lines.push(field_defs.join(" "));
+
+        // Sort rows ordinal-string by first column value (key)
+        let mut sorted_rows = block.rows.clone();
+        if !block.fields.is_empty() {
+            let key_field = &block.fields[0];
+            sorted_rows.sort_by(|a, b| {
+                let val_a = a.get(key_field);
+                let val_b = b.get(key_field);
+
+                // Null values (missing or Value::Null) sort to the end
+                let is_null_a = val_a.is_none() || matches!(val_a, Some(Value::Null));
+                let is_null_b = val_b.is_none() || matches!(val_b, Some(Value::Null));
+
+                match (is_null_a, is_null_b) {
+                    (true, true) => std::cmp::Ordering::Equal,
+                    (true, false) => std::cmp::Ordering::Greater,
+                    (false, true) => std::cmp::Ordering::Less,
+                    (false, false) => {
+                        // Both are non-null, compare as strings
+                        let str_a = self.value_to_string(val_a.unwrap());
+                        let str_b = self.value_to_string(val_b.unwrap());
+                        str_a.cmp(&str_b)
+                    }
+                }
+            });
+        }
+
+        // Data rows (no alignment, single-space delimiter)
+        for row in &sorted_rows {
+            let values: Vec<String> = block
+                .fields
+                .iter()
+                .map(|f| {
+                    row.get(f)
+                        .map(|v| self.serialize_value_canonical(v))
+                        .unwrap_or_else(|| "null".to_string())
+                })
+                .collect();
+            lines.push(values.join(" "));
+        }
+
+        // Summary separator and rows (if present)
+        if !block.summary_rows.is_empty() {
+            lines.push("---".to_string());
+            for row in &block.summary_rows {
+                let values: Vec<String> = block
+                    .fields
+                    .iter()
+                    .map(|f| {
+                        row.get(f)
+                            .map(|v| self.serialize_value_canonical(v))
+                            .unwrap_or_else(|| "null".to_string())
+                    })
+                    .collect();
+                lines.push(values.join(" "));
+            }
+        }
+
+        lines.join("\n")
+    }
+
+    fn serialize_value_canonical(&self, value: &Value) -> String {
+        match value {
+            Value::Null => "null".to_string(),
+            Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+            Value::Int(i) => i.to_string(),
+            Value::Float(f) => f.to_string(),
+            Value::Reference(r) => r.to_ison(),
+            Value::String(s) => self.serialize_string_canonical(s),
+        }
+    }
+
+    fn serialize_string_canonical(&self, s: &str) -> String {
+        if s.is_empty() {
+            return "\"\"".to_string();
+        }
+
+        // Same quoting rules as regular Serializer
+        let needs_quotes = s.contains(' ')
+            || s.contains('\t')
+            || s.contains('\n')
+            || s.contains('\r')
+            || s.contains('"')
+            || s.contains('\\')
+            || s.contains('.')
+            || s == "true"
+            || s == "false"
+            || s == "null"
+            || s.starts_with('#')
+            || s.starts_with(':')
+            || s.parse::<f64>().is_ok();
+
+        if !needs_quotes {
+            return s.to_string();
+        }
+
+        let escaped = s
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+            .replace('\t', "\\t")
+            .replace('\r', "\\r");
+
+        format!("\"{}\"", escaped)
+    }
+
+    /// Convert a value to string for ordinal comparison
+    fn value_to_string(&self, value: &Value) -> String {
+        match value {
+            Value::Null => String::new(), // Should not be used due to null check
+            Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+            Value::Int(i) => i.to_string(),
+            Value::Float(f) => f.to_string(),
+            Value::Reference(r) => r.to_ison(),
+            Value::String(s) => s.clone(),
+        }
+    }
+}
+
+// =============================================================================
 // ISONL Parser/Serializer
 // =============================================================================
 
@@ -1294,6 +1540,39 @@ pub fn dumps(doc: &Document, align_columns: bool) -> String {
 /// * `delimiter` - Column separator (default: " ", alternatives: ",")
 pub fn dumps_with_delimiter(doc: &Document, align_columns: bool, delimiter: &str) -> String {
     Serializer::with_delimiter(align_columns, delimiter).serialize(doc)
+}
+
+/// Serialize a Document to canonical ISON string.
+///
+/// Canonical form produces byte-identical output across all implementations
+/// for the same logical data. Blocks are sorted ordinal-string (lexicographically)
+/// by key (kind.name), rows within each block are sorted ordinal-string by the
+/// first column value (conventionally 'id'), using single-space delimiter
+/// and no alignment.
+///
+/// # Arguments
+/// * `doc` - The document to serialize
+///
+/// # Returns
+/// Canonical ISON formatted string (deterministic, sorted)
+pub fn dumps_canonical(doc: &Document) -> String {
+    CanonicalSerializer::new().serialize(doc)
+}
+
+/// Serialize a Document to canonical ISONL string.
+///
+/// Canonical form produces byte-identical output across all implementations
+/// for the same logical data. Blocks are sorted ordinal-string by key
+/// (kind.name), rows within each block are sorted ordinal-string by the
+/// first column value (conventionally 'id').
+///
+/// # Arguments
+/// * `doc` - The document to serialize
+///
+/// # Returns
+/// Result containing canonical ISONL formatted string, or error if envelope validation fails
+pub fn dumps_canonical_isonl(doc: &Document) -> Result<String> {
+    CanonicalSerializer::new().serialize_isonl(doc)
 }
 
 /// Parse ISONL string (alias for parse_isonl)
@@ -2212,5 +2491,382 @@ id name email
                 trial, rows, out
             );
         }
+    }
+
+    // ==========================================================================
+    // Canonical Serialization Tests (ISONCS)
+    // ==========================================================================
+
+    #[test]
+    fn test_canonical_blocks_sorted() {
+        // Blocks should be sorted ordinal-string by kind.name
+        let mut doc = Document::new();
+
+        let mut users_block = Block::new("table", "users");
+        users_block.fields = vec!["id".to_string(), "name".to_string()];
+        let mut users_row = Row::new();
+        users_row.insert("id".to_string(), Value::String("2".to_string()));
+        users_row.insert("name".to_string(), Value::String("Bob".to_string()));
+        users_block.rows.push(users_row);
+        doc.blocks.push(users_block);
+
+        let mut active_block = Block::new("table", "active_users");
+        active_block.fields = vec!["id".to_string(), "name".to_string()];
+        let mut active_row = Row::new();
+        active_row.insert("id".to_string(), Value::String("1".to_string()));
+        active_row.insert("name".to_string(), Value::String("Alice".to_string()));
+        active_block.rows.push(active_row);
+        doc.blocks.push(active_block);
+
+        let mut zulu_block = Block::new("table", "zulu");
+        zulu_block.fields = vec!["id".to_string(), "name".to_string()];
+        let mut zulu_row = Row::new();
+        zulu_row.insert("id".to_string(), Value::String("3".to_string()));
+        zulu_row.insert("name".to_string(), Value::String("Charlie".to_string()));
+        zulu_block.rows.push(zulu_row);
+        doc.blocks.push(zulu_block);
+
+        let canonical = dumps_canonical(&doc);
+
+        // Blocks should be in ordinal order: table.active_users < table.users < table.zulu
+        assert!(canonical.find("table.active_users").unwrap() < canonical.find("table.users").unwrap());
+        assert!(canonical.find("table.users").unwrap() < canonical.find("table.zulu").unwrap());
+    }
+
+    #[test]
+    fn test_canonical_rows_sorted_by_key() {
+        // Rows should be sorted ordinal-string by first column value
+        let mut doc = Document::new();
+        let mut block = Block::new("table", "items");
+        block.fields = vec!["id".to_string(), "name".to_string()];
+
+        let mut row1 = Row::new();
+        row1.insert("id".to_string(), Value::String("10".to_string()));
+        row1.insert("name".to_string(), Value::String("ten".to_string()));
+        block.rows.push(row1);
+
+        let mut row2 = Row::new();
+        row2.insert("id".to_string(), Value::String("2".to_string()));
+        row2.insert("name".to_string(), Value::String("two".to_string()));
+        block.rows.push(row2);
+
+        let mut row3 = Row::new();
+        row3.insert("id".to_string(), Value::String("1".to_string()));
+        row3.insert("name".to_string(), Value::String("one".to_string()));
+        block.rows.push(row3);
+
+        doc.blocks.push(block);
+
+        let canonical = dumps_canonical(&doc);
+        let lines: Vec<&str> = canonical.split('\n').collect();
+
+        // Find data lines (skip header and field line)
+        let data_lines: Vec<&str> = lines.iter()
+            .filter(|l| !l.contains("table.") && *l != &"id name" && !l.is_empty())
+            .copied()
+            .collect();
+
+        // Ordinal sort: "1" < "10" < "2"
+        assert_eq!(data_lines[0], "\"1\" one");
+        assert_eq!(data_lines[1], "\"10\" ten");
+        assert_eq!(data_lines[2], "\"2\" two");
+    }
+
+    #[test]
+    fn test_canonical_null_keys_sort_last() {
+        // Rows with null in the key column should sort to the end
+        let mut doc = Document::new();
+        let mut block = Block::new("table", "items");
+        block.fields = vec!["id".to_string(), "name".to_string()];
+
+        let mut row1 = Row::new();
+        row1.insert("id".to_string(), Value::String("2".to_string()));
+        row1.insert("name".to_string(), Value::String("two".to_string()));
+        block.rows.push(row1);
+
+        let mut row2 = Row::new();
+        row2.insert("id".to_string(), Value::Null);
+        row2.insert("name".to_string(), Value::String("orphan".to_string()));
+        block.rows.push(row2);
+
+        let mut row3 = Row::new();
+        row3.insert("id".to_string(), Value::String("1".to_string()));
+        row3.insert("name".to_string(), Value::String("one".to_string()));
+        block.rows.push(row3);
+
+        doc.blocks.push(block);
+
+        let canonical = dumps_canonical(&doc);
+        let lines: Vec<&str> = canonical.split('\n').collect();
+
+        // Find data lines
+        let data_lines: Vec<&str> = lines.iter()
+            .filter(|l| !l.contains("table.") && *l != &"id name" && !l.is_empty())
+            .copied()
+            .collect();
+
+        // Rows with values come first, null keys last
+        assert_eq!(data_lines[0], "\"1\" one");
+        assert_eq!(data_lines[1], "\"2\" two");
+        assert_eq!(data_lines[2], "null orphan");
+    }
+
+    #[test]
+    fn test_canonical_idempotent() {
+        // Canonical serialization is idempotent
+        let mut doc = Document::new();
+        let mut block = Block::new("table", "users");
+        block.fields = vec!["id".to_string(), "name".to_string()];
+
+        let mut row1 = Row::new();
+        row1.insert("id".to_string(), Value::String("2".to_string()));
+        row1.insert("name".to_string(), Value::String("Bob".to_string()));
+        block.rows.push(row1);
+
+        let mut row2 = Row::new();
+        row2.insert("id".to_string(), Value::String("1".to_string()));
+        row2.insert("name".to_string(), Value::String("Alice".to_string()));
+        block.rows.push(row2);
+
+        doc.blocks.push(block);
+
+        let canonical1 = dumps_canonical(&doc);
+        let parsed = parse(&canonical1).unwrap();
+        let canonical2 = dumps_canonical(&parsed);
+
+        assert_eq!(canonical1, canonical2);
+    }
+
+    #[test]
+    fn test_canonical_no_alignment() {
+        // Canonical output should use single space, no alignment padding
+        let mut doc = Document::new();
+        let mut block = Block::new("table", "data");
+        block.fields = vec!["short".to_string(), "very_long_name".to_string()];
+
+        let mut row = Row::new();
+        row.insert("short".to_string(), Value::String("a".to_string()));
+        row.insert("very_long_name".to_string(), Value::String("b".to_string()));
+        block.rows.push(row);
+
+        doc.blocks.push(block);
+
+        let canonical = dumps_canonical(&doc);
+
+        // Should be single space between columns, not padded
+        assert!(canonical.contains("short very_long_name"));
+        assert!(canonical.contains("a b"));
+        // No padding after 'a' (would have extra spaces for alignment)
+        assert!(!canonical.contains("a  "));
+    }
+
+    #[test]
+    fn test_canonical_with_references() {
+        // Canonical serialization should preserve references and sort rows
+        let mut doc = Document::new();
+        let mut block = Block::new("table", "edges");
+        block.fields = vec!["source".to_string(), "target".to_string()];
+
+        let mut row1 = Row::new();
+        row1.insert("source".to_string(), Value::Reference(Reference::new("2")));
+        row1.insert("target".to_string(), Value::Reference(Reference::new("b")));
+        block.rows.push(row1);
+
+        let mut row2 = Row::new();
+        row2.insert("source".to_string(), Value::Reference(Reference::new("1")));
+        row2.insert("target".to_string(), Value::Reference(Reference::new("a")));
+        block.rows.push(row2);
+
+        doc.blocks.push(block);
+
+        let canonical = dumps_canonical(&doc);
+        let lines: Vec<&str> = canonical.split('\n').collect();
+
+        // Find data lines that start with ':'
+        let data_lines: Vec<&str> = lines.iter()
+            .filter(|l| l.starts_with(':'))
+            .copied()
+            .collect();
+
+        // Rows should be sorted by first column: :1 < :2
+        assert_eq!(data_lines[0], ":1 :a");
+        assert_eq!(data_lines[1], ":2 :b");
+    }
+
+    #[test]
+    fn test_canonical_golden_fixture() {
+        // Golden fixture: a standard document serialized to canonical form.
+        // This fixture is used for cross-implementation byte-identity verification.
+
+        let mut doc = Document::new();
+
+        // Edges block (added first, but should sort before users alphabetically)
+        let mut edges = Block::new("table", "edges");
+        edges.fields = vec!["source".to_string(), "target".to_string()];
+
+        let mut edge1 = Row::new();
+        edge1.insert("source".to_string(), Value::Reference(Reference::new("2")));
+        edge1.insert("target".to_string(), Value::Reference(Reference::new("1")));
+        edges.rows.push(edge1);
+
+        let mut edge2 = Row::new();
+        edge2.insert("source".to_string(), Value::Reference(Reference::new("1")));
+        edge2.insert("target".to_string(), Value::Reference(Reference::new("3")));
+        edges.rows.push(edge2);
+
+        doc.blocks.push(edges);
+
+        // Users block
+        let mut users = Block::new("table", "users");
+        users.fields = vec!["id".to_string(), "name".to_string(), "active".to_string()];
+
+        let mut user1 = Row::new();
+        user1.insert("id".to_string(), Value::String("2".to_string()));
+        user1.insert("name".to_string(), Value::String("Bob".to_string()));
+        user1.insert("active".to_string(), Value::Bool(true));
+        users.rows.push(user1);
+
+        let mut user2 = Row::new();
+        user2.insert("id".to_string(), Value::String("1".to_string()));
+        user2.insert("name".to_string(), Value::String("Alice".to_string()));
+        user2.insert("active".to_string(), Value::Bool(true));
+        users.rows.push(user2);
+
+        let mut user3 = Row::new();
+        user3.insert("id".to_string(), Value::String("3".to_string()));
+        user3.insert("name".to_string(), Value::String("Charlie".to_string()));
+        user3.insert("active".to_string(), Value::Bool(false));
+        users.rows.push(user3);
+
+        doc.blocks.push(users);
+
+        let canonical = dumps_canonical(&doc);
+
+        // Expected order: blocks sorted (edges < users), rows sorted within each
+        let expected_lines = vec![
+            "table.edges",
+            "source target",
+            ":1 :3",
+            ":2 :1",
+            "",
+            "table.users",
+            "id name active",
+            "\"1\" Alice true",
+            "\"2\" Bob true",
+            "\"3\" Charlie false",
+        ];
+        let expected = expected_lines.join("\n");
+
+        assert_eq!(canonical, expected, "\nExpected:\n{}\n\nGot:\n{}", expected, canonical);
+    }
+
+    #[test]
+    fn test_canonical_isonl_blocks_sorted() {
+        // ISONL canonical should also sort blocks
+        let mut doc = Document::new();
+
+        let mut zebras = Block::new("table", "zebras");
+        zebras.fields = vec!["id".to_string()];
+        let mut row = Row::new();
+        row.insert("id".to_string(), Value::String("1".to_string()));
+        zebras.rows.push(row);
+        doc.blocks.push(zebras);
+
+        let mut aardvarks = Block::new("table", "aardvarks");
+        aardvarks.fields = vec!["id".to_string()];
+        let mut row = Row::new();
+        row.insert("id".to_string(), Value::String("2".to_string()));
+        aardvarks.rows.push(row);
+        doc.blocks.push(aardvarks);
+
+        let canonical_isonl = dumps_canonical_isonl(&doc).unwrap();
+        let lines: Vec<&str> = canonical_isonl.split('\n').collect();
+
+        // First line should be aardvarks (alphabetically first)
+        assert!(lines[0].contains("table.aardvarks"));
+        assert!(lines[1].contains("table.zebras"));
+    }
+
+    #[test]
+    fn test_canonical_isonl_rows_sorted() {
+        // ISONL canonical should sort rows by key
+        let mut doc = Document::new();
+        let mut block = Block::new("table", "items");
+        block.fields = vec!["id".to_string(), "val".to_string()];
+
+        let mut row1 = Row::new();
+        row1.insert("id".to_string(), Value::String("c".to_string()));
+        row1.insert("val".to_string(), Value::String("three".to_string()));
+        block.rows.push(row1);
+
+        let mut row2 = Row::new();
+        row2.insert("id".to_string(), Value::String("a".to_string()));
+        row2.insert("val".to_string(), Value::String("one".to_string()));
+        block.rows.push(row2);
+
+        let mut row3 = Row::new();
+        row3.insert("id".to_string(), Value::String("b".to_string()));
+        row3.insert("val".to_string(), Value::String("two".to_string()));
+        block.rows.push(row3);
+
+        doc.blocks.push(block);
+
+        let canonical_isonl = dumps_canonical_isonl(&doc).unwrap();
+        let lines: Vec<&str> = canonical_isonl.split('\n').collect();
+
+        // ISONL format: header|fields|values per line
+        // Should see a, b, c in order
+        let idx_a = lines.iter().position(|l| l.contains("a one")).unwrap();
+        let idx_b = lines.iter().position(|l| l.contains("b two")).unwrap();
+        let idx_c = lines.iter().position(|l| l.contains("c three")).unwrap();
+        assert!(idx_a < idx_b && idx_b < idx_c);
+    }
+
+    #[test]
+    fn test_canonical_empty_string_handling() {
+        // Empty strings should be quoted in canonical output
+        let mut doc = Document::new();
+        let mut block = Block::new("table", "test");
+        block.fields = vec!["id".to_string(), "name".to_string()];
+
+        let mut row1 = Row::new();
+        row1.insert("id".to_string(), Value::String("1".to_string()));
+        row1.insert("name".to_string(), Value::String("".to_string()));
+        block.rows.push(row1);
+
+        let mut row2 = Row::new();
+        row2.insert("id".to_string(), Value::String("2".to_string()));
+        row2.insert("name".to_string(), Value::String("value".to_string()));
+        block.rows.push(row2);
+
+        doc.blocks.push(block);
+
+        let canonical = dumps_canonical(&doc);
+
+        // Empty string should be quoted
+        assert!(canonical.contains("\"\""));
+    }
+
+    #[test]
+    fn test_canonical_field_info_preserved() {
+        // Field type annotations should be preserved in canonical output
+        let mut doc = Document::new();
+        let mut block = Block::new("table", "typed");
+        block.fields = vec!["id".to_string(), "count".to_string()];
+        block.field_info = vec![
+            FieldInfo::with_type("id", "string"),
+            FieldInfo::with_type("count", "int"),
+        ];
+
+        let mut row = Row::new();
+        row.insert("id".to_string(), Value::String("1".to_string()));
+        row.insert("count".to_string(), Value::Int(42));
+        block.rows.push(row);
+
+        doc.blocks.push(block);
+
+        let canonical = dumps_canonical(&doc);
+
+        assert!(canonical.contains("id:string count:int"));
     }
 }

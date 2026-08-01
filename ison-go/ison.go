@@ -805,6 +805,219 @@ func DumpsWithOptions(doc *Document, opts DumpsOptions) string {
 	return sb.String()
 }
 
+// DumpsCanonical serializes a Document to canonical ISON format.
+// Canonical form sorts blocks ordinal-string by kind.name, rows within each
+// block ordinal-string by the first column value (the key), produces output
+// with single-space delimiter and no alignment, yielding byte-identical output
+// across implementations for the same logical data.
+func DumpsCanonical(doc *Document) string {
+	// Sort block names by kind.name (ordinal-string comparison)
+	blockKeys := make([]string, 0, len(doc.Blocks))
+	for _, name := range doc.Order {
+		block := doc.Blocks[name]
+		blockKeys = append(blockKeys, fmt.Sprintf("%s.%s", block.Kind, block.Name))
+	}
+	sort.Strings(blockKeys)
+
+	// Serialize each block canonically
+	blocksOutput := make([]string, len(blockKeys))
+	for i, key := range blockKeys {
+		// Extract name from key (everything after the first dot)
+		parts := strings.SplitN(key, ".", 2)
+		if len(parts) == 2 {
+			name := parts[1]
+			block := doc.Blocks[name]
+			blocksOutput[i] = serializeBlockCanonical(block)
+		}
+	}
+
+	// Join blocks with blank line separator
+	return strings.Join(blocksOutput, "\n\n")
+}
+
+// serializeBlockCanonical serializes a single block in canonical form (sorted rows, no alignment)
+func serializeBlockCanonical(block *Block) string {
+	lines := []string{}
+
+	// Header
+	lines = append(lines, fmt.Sprintf("%s.%s", block.Kind, block.Name))
+
+	// Fields (with type hints if present)
+	fieldStrs := []string{}
+	for _, field := range block.Fields {
+		if field.TypeHint != "" {
+			fieldStrs = append(fieldStrs, fmt.Sprintf("%s:%s", field.Name, field.TypeHint))
+		} else {
+			fieldStrs = append(fieldStrs, field.Name)
+		}
+	}
+	lines = append(lines, strings.Join(fieldStrs, " "))
+
+	// Sort rows by first column value (ordinal-string comparison)
+	sortedRows := sortRowsByKey(block)
+
+	// Data rows (no alignment, single-space delimiter)
+	for _, row := range sortedRows {
+		values := []string{}
+		for _, field := range block.Fields {
+			if val, ok := row[field.Name]; ok {
+				values = append(values, val.ToISON())
+			} else {
+				values = append(values, "~")
+			}
+		}
+		lines = append(lines, strings.TrimRight(strings.Join(values, " "), " "))
+	}
+
+	// Summary row (if present)
+	if block.SummaryRow != nil {
+		lines = append(lines, "---")
+		values := []string{}
+		for _, field := range block.Fields {
+			if val, ok := block.SummaryRow[field.Name]; ok {
+				values = append(values, val.ToISON())
+			} else {
+				values = append(values, "~")
+			}
+		}
+		lines = append(lines, strings.TrimRight(strings.Join(values, " "), " "))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// sortRowsByKey sorts rows ordinal-string by their first column value (the key).
+// Rows with null in the key column sort to the end.
+func sortRowsByKey(block *Block) []Row {
+	if len(block.Rows) == 0 || len(block.Fields) == 0 {
+		return block.Rows
+	}
+
+	keyFieldName := block.Fields[0].Name
+	rows := make([]Row, len(block.Rows))
+	copy(rows, block.Rows)
+
+	sort.SliceStable(rows, func(i, j int) bool {
+		keyI := rows[i][keyFieldName]
+		keyJ := rows[j][keyFieldName]
+
+		// Extract sort values
+		iIsNull := keyI.Type == TypeNull
+		jIsNull := keyJ.Type == TypeNull
+		iVal := valueToString(keyI)
+		jVal := valueToString(keyJ)
+
+		// Rows with null key sort to the end
+		if iIsNull && jIsNull {
+			return false // both null, maintain stable sort
+		}
+		if iIsNull {
+			return false // i is null, goes after j
+		}
+		if jIsNull {
+			return true // j is null, i goes before j
+		}
+
+		// Both have values: ordinal-string comparison
+		return iVal < jVal
+	})
+
+	return rows
+}
+
+// valueToString converts a Value to its string representation for ordinal sorting.
+func valueToString(v Value) string {
+	switch v.Type {
+	case TypeNull:
+		return ""
+	case TypeBool:
+		if v.BoolVal {
+			return "true"
+		}
+		return "false"
+	case TypeInt:
+		return strconv.FormatInt(v.IntVal, 10)
+	case TypeFloat:
+		return strconv.FormatFloat(v.FloatVal, 'f', -1, 64)
+	case TypeString:
+		return v.StringVal
+	case TypeReference:
+		return v.RefVal.ToISON()
+	default:
+		return ""
+	}
+}
+
+// DumpsCanonicalISONL serializes a Document to canonical ISONL format.
+// Blocks are sorted ordinal-string by kind.name, rows within each block are
+// sorted ordinal-string by the first column value, producing byte-identical
+// output across implementations for the same logical data. Returns an error
+// if any block fails envelope validation.
+func DumpsCanonicalISONL(doc *Document) (string, error) {
+	var sb strings.Builder
+
+	// Sort block names by kind.name (ordinal-string comparison)
+	blockKeys := make([]string, 0, len(doc.Blocks))
+	for _, name := range doc.Order {
+		block := doc.Blocks[name]
+		blockKeys = append(blockKeys, fmt.Sprintf("%s.%s", block.Kind, block.Name))
+	}
+	sort.Strings(blockKeys)
+
+	// Rebuild blocks map with sorted order
+	sortedBlocks := make([]*Block, len(blockKeys))
+	for i, key := range blockKeys {
+		// Extract name from key (everything after the first dot)
+		parts := strings.SplitN(key, ".", 2)
+		if len(parts) == 2 {
+			name := parts[1]
+			sortedBlocks[i] = doc.Blocks[name]
+		}
+	}
+
+	for _, block := range sortedBlocks {
+		// Validate envelope
+		if err := validateISONLEnvelope(block); err != nil {
+			return "", err
+		}
+
+		// Build field header
+		fieldHeader := strings.Builder{}
+		for i, field := range block.Fields {
+			if i > 0 {
+				fieldHeader.WriteString(" ")
+			}
+			if field.TypeHint != "" {
+				fieldHeader.WriteString(fmt.Sprintf("%s:%s", field.Name, field.TypeHint))
+			} else {
+				fieldHeader.WriteString(field.Name)
+			}
+		}
+		fields := fieldHeader.String()
+
+		// Sort rows by first column value (ordinal-string comparison)
+		sortedRows := sortRowsByKey(block)
+
+		// Write each row as a separate line
+		for _, row := range sortedRows {
+			sb.WriteString(fmt.Sprintf("%s.%s|%s|", block.Kind, block.Name, fields))
+			for i, field := range block.Fields {
+				if i > 0 {
+					sb.WriteString(" ")
+				}
+				if val, ok := row[field.Name]; ok {
+					sb.WriteString(valueToISONL(val))
+				} else {
+					sb.WriteString("~")
+				}
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String(), nil
+}
+
 // headerPartPattern matches one half of a "kind.name" block header.
 var headerPartPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`)
 

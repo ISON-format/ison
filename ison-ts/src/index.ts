@@ -728,6 +728,106 @@ class Serializer {
   private looksLikeBlockHeader(s: string): boolean {
     return /^[a-zA-Z_][a-zA-Z0-9_-]*\.[a-zA-Z_][a-zA-Z0-9_-]*$/.test(s);
   }
+
+  /**
+   * Serialize a Document to canonical ISON string.
+   * Blocks are sorted ordinal-string by kind.name, rows within each block
+   * are sorted ordinal-string by the first column value, using single-space
+   * delimiter and no alignment.
+   */
+  serializeCanonical(doc: Document): string {
+    const parts: string[] = [];
+
+    // Sort blocks ordinal-string by key (kind.name)
+    const sortedBlocks = [...doc.blocks].sort((a, b) => {
+      const keyA = `${a.kind}.${a.name}`;
+      const keyB = `${b.kind}.${b.name}`;
+      return keyA.localeCompare(keyB);
+    });
+
+    for (const block of sortedBlocks) {
+      parts.push(this.serializeBlockCanonical(block));
+    }
+
+    return parts.join("\n\n");
+  }
+
+  private serializeBlockCanonical(block: Block): string {
+    const lines: string[] = [];
+
+    // Header
+    lines.push(`${block.kind}.${block.name}`);
+
+    // Fields with types
+    let fieldDefs: string[] = [];
+    if (block.fieldInfo.length > 0) {
+      fieldDefs = block.fieldInfo.map(fi => {
+        if (fi.type) {
+          return `${fi.name}:${fi.type}`;
+        }
+        return fi.name;
+      });
+    } else {
+      // Use fields array if fieldInfo is not populated
+      fieldDefs = block.fields;
+    }
+    lines.push(fieldDefs.join(' '));
+
+    // Sort rows ordinal-string by first column value (key)
+    const sortedRows = this.sortRowsByKey(block);
+
+    // Data rows (single-space delimiter, no alignment)
+    for (const row of sortedRows) {
+      const values: string[] = [];
+      for (const field of block.fields) {
+        const value = row[field];
+        values.push(this.serializeValue(value));
+      }
+      lines.push(values.join(' ').trimEnd());
+    }
+
+    // Summary separator and rows (if present)
+    if (block.summaryRows.length > 0) {
+      lines.push('---');
+      for (const row of block.summaryRows) {
+        const values: string[] = [];
+        for (const field of block.fields) {
+          const value = row[field];
+          values.push(this.serializeValue(value));
+        }
+        lines.push(values.join(' ').trimEnd());
+      }
+    }
+
+    return lines.join("\n");
+  }
+
+  private sortRowsByKey(block: Block): Row[] {
+    if (!block.rows || block.rows.length === 0 || !block.fields || block.fields.length === 0) {
+      return block.rows;
+    }
+
+    const keyField = block.fields[0];
+
+    return [...block.rows].sort((a, b) => {
+      const keyA = a[keyField];
+      const keyB = b[keyField];
+
+      // Rows with null key sort to the end
+      if (keyA === null || keyA === undefined) {
+        if (keyB === null || keyB === undefined) return 0;
+        return 1;
+      }
+      if (keyB === null || keyB === undefined) {
+        return -1;
+      }
+
+      // Ordinal (lexicographic) string comparison
+      const strA = String(keyA);
+      const strB = String(keyB);
+      return strA.localeCompare(strB);
+    });
+  }
 }
 
 // =============================================================================
@@ -991,6 +1091,73 @@ class ISONLSerializer {
       .replace(/\|/g, "\\|");
     return `"${escaped}"`;
   }
+
+  /**
+   * Serialize a Document to canonical ISONL string.
+   * Blocks are sorted ordinal-string by kind.name, rows within each block
+   * are sorted ordinal-string by the first column value, producing byte-identical
+   * output across implementations for the same logical data.
+   */
+  serializeCanonical(doc: Document): string {
+    const lines: string[] = [];
+
+    // Sort blocks ordinal-string by key (kind.name)
+    const sortedBlocks = [...doc.blocks].sort((a, b) => {
+      const keyA = `${a.kind}.${a.name}`;
+      const keyB = `${b.kind}.${b.name}`;
+      return keyA.localeCompare(keyB);
+    });
+
+    for (const block of sortedBlocks) {
+      this.validateEnvelope(block);
+      const header = `${block.kind}.${block.name}`;
+
+      // Build fields string with type annotations if available
+      let fieldsStr: string;
+      if (block.fieldInfo.length > 0) {
+        fieldsStr = block.fieldInfo.map(fi => fi.type ? `${fi.name}:${fi.type}` : fi.name).join(" ");
+      } else {
+        fieldsStr = block.fields.join(" ");
+      }
+
+      // Sort rows ordinal-string by first column value (key)
+      const sortedRows = this.sortRowsByKey(block);
+
+      for (const row of sortedRows) {
+        const values = block.fields.map(f => this.serializeValue(row[f])).join(" ");
+        lines.push(`${header}|${fieldsStr}|${values}`);
+      }
+    }
+
+    return lines.join("\n");
+  }
+
+  private sortRowsByKey(block: Block): Row[] {
+    if (!block.rows || block.rows.length === 0 || !block.fields || block.fields.length === 0) {
+      return block.rows;
+    }
+
+    const keyField = block.fields[0];
+
+    return [...block.rows].sort((a, b) => {
+      const keyA = a[keyField];
+      const keyB = b[keyField];
+
+      // Rows with null key sort to the end
+      if (keyA === null || keyA === undefined) {
+        if (keyB === null || keyB === undefined) return 0;
+        return 1;
+      }
+      if (keyB === null || keyB === undefined) {
+        return -1;
+      }
+
+      // Ordinal (lexicographic) string comparison
+      const strA = String(keyA);
+      const strB = String(keyB);
+      return strA.localeCompare(strB);
+    });
+  }
 }
 
 // =============================================================================
@@ -1045,6 +1212,26 @@ export function loadsIsonl(text: string): Document {
  */
 export function dumpsIsonl(doc: Document): string {
   return new ISONLSerializer().serialize(doc);
+}
+
+/**
+ * Serialize a Document to canonical ISON string.
+ * Canonical form produces byte-identical output across all implementations
+ * for the same logical data. Blocks are sorted ordinal-string by key (kind.name),
+ * rows within each block are sorted ordinal-string by the first column value,
+ * using single-space delimiter and no alignment.
+ */
+export function dumpsCanonical(doc: Document): string {
+  return new Serializer(false, ' ').serializeCanonical(doc);
+}
+
+/**
+ * Serialize a Document to canonical ISONL string.
+ * Canonical form produces byte-identical output across all implementations
+ * for the same logical data. Blocks and rows are sorted ordinal-string.
+ */
+export function dumpsCanonicalIsonl(doc: Document): string {
+  return new ISONLSerializer().serializeCanonical(doc);
 }
 
 /**

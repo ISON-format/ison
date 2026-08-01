@@ -8,6 +8,8 @@ import {
   isonToIsonl,
   isonlToIson,
   fromDict,
+  dumpsCanonical,
+  dumpsCanonicalIsonl,
   Reference,
   Document,
   Block,
@@ -568,5 +570,253 @@ id name team
 
     expect(dict.users[0].id).toBe(1);
     expect(dict.users[0].team.$ref).toBe("10");
+  });
+});
+
+describe("Canonical Serialization (ISONCS)", () => {
+  it("should sort blocks ordinal-string by kind.name", () => {
+    const doc = new Document();
+    doc.blocks.push(new Block("table", "users"));
+    doc.blocks[0].fields = ["id", "name"];
+    doc.blocks[0].rows = [{ id: 2, name: "Bob" }];
+
+    doc.blocks.push(new Block("table", "active_users"));
+    doc.blocks[1].fields = ["id", "name"];
+    doc.blocks[1].rows = [{ id: 1, name: "Alice" }];
+
+    doc.blocks.push(new Block("table", "zulu"));
+    doc.blocks[2].fields = ["id", "name"];
+    doc.blocks[2].rows = [{ id: 3, name: "Charlie" }];
+
+    const canonical = dumpsCanonical(doc);
+
+    // Blocks should be in ordinal order: table.active_users < table.users < table.zulu
+    expect(canonical.indexOf("table.active_users")).toBeLessThan(canonical.indexOf("table.users"));
+    expect(canonical.indexOf("table.users")).toBeLessThan(canonical.indexOf("table.zulu"));
+  });
+
+  it("should sort rows ordinal-string by first column value", () => {
+    const doc = new Document();
+    const block = new Block("table", "items");
+    block.fields = ["id", "name"];
+    block.rows = [
+      { id: "10", name: "ten" },
+      { id: "2", name: "two" },
+      { id: "1", name: "one" },
+    ];
+    doc.blocks.push(block);
+
+    const canonical = dumpsCanonical(doc);
+    const lines = canonical.split("\n");
+    const dataLines = lines.filter(l => l && !l.startsWith("table") && l !== "id name");
+
+    // Ordinal sort: "1" < "10" < "2"
+    expect(dataLines).toEqual(['"1" one', '"10" ten', '"2" two']);
+  });
+
+  it("should put null keys at the end", () => {
+    const doc = new Document();
+    const block = new Block("table", "items");
+    block.fields = ["id", "name"];
+    block.rows = [
+      { id: "2", name: "two" },
+      { id: null, name: "orphan" },
+      { id: "1", name: "one" },
+    ];
+    doc.blocks.push(block);
+
+    const canonical = dumpsCanonical(doc);
+    const lines = canonical.split("\n");
+    const dataLines = lines.filter(l => l && !l.startsWith("table") && l !== "id name");
+
+    // Rows with values come first, null keys last
+    expect(dataLines).toEqual(['"1" one', '"2" two', "null orphan"]);
+  });
+
+  it("should be idempotent", () => {
+    const doc = new Document();
+    const block = new Block("table", "users");
+    block.fields = ["id", "name"];
+    block.rows = [
+      { id: "2", name: "Bob" },
+      { id: "1", name: "Alice" },
+    ];
+    doc.blocks.push(block);
+
+    const canonical1 = dumpsCanonical(doc);
+    const parsed = parse(canonical1);
+    const canonical2 = dumpsCanonical(parsed);
+
+    expect(canonical1).toBe(canonical2);
+  });
+
+  it("should use single space delimiter and no alignment", () => {
+    const doc = new Document();
+    const block = new Block("table", "data");
+    block.fields = ["short", "very_long_name"];
+    block.rows = [{ short: "a", very_long_name: "b" }];
+    doc.blocks.push(block);
+
+    const canonical = dumpsCanonical(doc);
+
+    // Should be single space between columns, not padded
+    expect(canonical).toContain("short very_long_name");
+    expect(canonical).toContain("a b");
+    // No padding after 'a' (would have extra spaces for alignment)
+    expect(canonical).not.toContain("a  ");
+  });
+
+  it("should handle references in canonical form", () => {
+    const doc = new Document();
+    const block = new Block("table", "edges");
+    block.fields = ["source", "target"];
+    block.rows = [
+      { source: new Reference("2"), target: new Reference("1") },
+      { source: new Reference("1"), target: new Reference("3") },
+    ];
+    doc.blocks.push(block);
+
+    const canonical = dumpsCanonical(doc);
+    const lines = canonical.split("\n");
+    const dataLines = lines.filter(l => l.startsWith(":"));
+
+    // Rows should be sorted by first column: :1 < :2
+    expect(dataLines[0]).toBe(":1 :3");
+    expect(dataLines[1]).toBe(":2 :1");
+  });
+
+  it("should preserve empty strings with quotes", () => {
+    const doc = new Document();
+    const block = new Block("table", "test");
+    block.fields = ["id", "name"];
+    block.rows = [
+      { id: "1", name: "" },
+      { id: "2", name: "value" },
+    ];
+    doc.blocks.push(block);
+
+    const canonical = dumpsCanonical(doc);
+
+    // Empty string should be quoted
+    expect(canonical).toContain('""');
+  });
+
+  it("should preserve field type annotations in canonical form", () => {
+    const doc = new Document();
+    const block = new Block("table", "typed");
+    block.fields = ["id", "count"];
+    block.fieldInfo = [
+      { name: "id", type: "string", isComputed: false },
+      { name: "count", type: "int", isComputed: false },
+    ];
+    block.rows = [{ id: "1", count: 42 }];
+    doc.blocks.push(block);
+
+    const canonical = dumpsCanonical(doc);
+
+    expect(canonical).toContain("id:string count:int");
+  });
+
+  it("should match golden fixture from ison-py", () => {
+    /**
+     * Golden fixture: a standard document serialized to canonical form.
+     * This fixture is used for cross-implementation byte-identity verification.
+     * Expected output from ison-py reference implementation.
+     */
+    const doc = new Document();
+
+    // Users block
+    const users = new Block("table", "users");
+    users.fields = ["id", "name", "active"];
+    users.rows = [
+      { id: "2", name: "Bob", active: true },
+      { id: "1", name: "Alice", active: true },
+      { id: "3", name: "Charlie", active: false },
+    ];
+    doc.blocks.push(users);
+
+    // Edges block (added second, should sort to come before users alphabetically)
+    const edges = new Block("table", "edges");
+    edges.fields = ["source", "target"];
+    edges.rows = [
+      { source: new Reference("2"), target: new Reference("1") },
+      { source: new Reference("1"), target: new Reference("3") },
+    ];
+    doc.blocks.push(edges);
+
+    const canonical = dumpsCanonical(doc);
+
+    // Expected order: blocks sorted (edges < users), rows sorted within each
+    const expected = `table.edges
+source target
+:1 :3
+:2 :1
+
+table.users
+id name active
+"1" Alice true
+"2" Bob true
+"3" Charlie false`;
+
+    expect(canonical).toBe(expected);
+  });
+
+  it("should sort blocks in canonical ISONL", () => {
+    const doc = new Document();
+    doc.blocks.push(new Block("table", "zebras"));
+    doc.blocks[0].fields = ["id"];
+    doc.blocks[0].rows = [{ id: "1" }];
+
+    doc.blocks.push(new Block("table", "aardvarks"));
+    doc.blocks[1].fields = ["id"];
+    doc.blocks[1].rows = [{ id: "2" }];
+
+    const canonicalIsonl = dumpsCanonicalIsonl(doc);
+    const lines = canonicalIsonl.split("\n");
+
+    // First line should be aardvarks (alphabetically first)
+    expect(lines[0]).toContain("table.aardvarks");
+    expect(lines[1]).toContain("table.zebras");
+  });
+
+  it("should sort rows in canonical ISONL", () => {
+    const doc = new Document();
+    const block = new Block("table", "items");
+    block.fields = ["id", "val"];
+    block.rows = [
+      { id: "c", val: "three" },
+      { id: "a", val: "one" },
+      { id: "b", val: "two" },
+    ];
+    doc.blocks.push(block);
+
+    const canonicalIsonl = dumpsCanonicalIsonl(doc);
+    const lines = canonicalIsonl.split("\n");
+
+    // ISONL format: header|fields|values per line
+    // Should see a, b, c in order
+    const idxA = lines.findIndex(l => l.includes("a one"));
+    const idxB = lines.findIndex(l => l.includes("b two"));
+    const idxC = lines.findIndex(l => l.includes("c three"));
+
+    expect(idxA).toBeLessThan(idxB);
+    expect(idxB).toBeLessThan(idxC);
+  });
+
+  it("should produce canonical ISONL that round-trips correctly", () => {
+    const doc = new Document();
+    const block = new Block("table", "users");
+    block.fields = ["id", "name"];
+    block.rows = [
+      { id: "2", name: "Bob" },
+      { id: "1", name: "Alice" },
+    ];
+    doc.blocks.push(block);
+
+    const canonicalIsonl = dumpsCanonicalIsonl(doc);
+    const parsed = loadsIsonl(canonicalIsonl);
+    const canonicalIsonl2 = dumpsCanonicalIsonl(parsed);
+
+    expect(canonicalIsonl).toBe(canonicalIsonl2);
   });
 });

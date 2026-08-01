@@ -1084,3 +1084,311 @@ func TestISONRoundtripProperty(t *testing.T) {
 		}
 	}
 }
+
+// TestCanonicalBlocksSorted tests that blocks are sorted ordinal-string by kind.name
+func TestCanonicalBlocksSorted(t *testing.T) {
+	doc := NewDocument()
+
+	// Add blocks in non-alphabetical order
+	block1 := NewBlock("table", "users")
+	block1.AddField("id", "")
+	block1.AddField("name", "")
+	block1.AddRow(Row{"id": String("2"), "name": String("Bob")})
+	doc.AddBlock(block1)
+
+	block2 := NewBlock("table", "active_users")
+	block2.AddField("id", "")
+	block2.AddField("name", "")
+	block2.AddRow(Row{"id": String("1"), "name": String("Alice")})
+	doc.AddBlock(block2)
+
+	block3 := NewBlock("table", "zulu")
+	block3.AddField("id", "")
+	block3.AddField("name", "")
+	block3.AddRow(Row{"id": String("3"), "name": String("Charlie")})
+	doc.AddBlock(block3)
+
+	canonical := DumpsCanonical(doc)
+
+	// Blocks should be in ordinal order: table.active_users < table.users < table.zulu
+	activeIdx := strings.Index(canonical, "table.active_users")
+	usersIdx := strings.Index(canonical, "table.users")
+	zuluIdx := strings.Index(canonical, "table.zulu")
+
+	assert.Less(t, activeIdx, usersIdx)
+	assert.Less(t, usersIdx, zuluIdx)
+}
+
+// TestCanonicalRowsSortedByKey tests that rows are sorted ordinal-string by first column
+func TestCanonicalRowsSortedByKey(t *testing.T) {
+	doc := NewDocument()
+
+	block := NewBlock("table", "items")
+	block.AddField("id", "")
+	block.AddField("name", "")
+	block.AddRow(Row{"id": String("10"), "name": String("ten")})
+	block.AddRow(Row{"id": String("2"), "name": String("two")})
+	block.AddRow(Row{"id": String("1"), "name": String("one")})
+	doc.AddBlock(block)
+
+	canonical := DumpsCanonical(doc)
+	lines := strings.Split(canonical, "\n")
+
+	// Extract data lines (skip header and field line)
+	dataLines := []string{}
+	for _, line := range lines {
+		if line != "" && !strings.HasPrefix(line, "table") && line != "id name" {
+			dataLines = append(dataLines, line)
+		}
+	}
+
+	// Ordinal sort: "1" < "10" < "2" (numeric strings get quoted)
+	expected := []string{"\"1\" one", "\"10\" ten", "\"2\" two"}
+	assert.Equal(t, expected, dataLines)
+}
+
+// TestCanonicalNullKeysSortLast tests that rows with null in key column sort to end
+func TestCanonicalNullKeysSortLast(t *testing.T) {
+	doc := NewDocument()
+
+	block := NewBlock("table", "items")
+	block.AddField("id", "")
+	block.AddField("name", "")
+	block.AddRow(Row{"id": String("2"), "name": String("two")})
+	block.AddRow(Row{"id": Null(), "name": String("orphan")})
+	block.AddRow(Row{"id": String("1"), "name": String("one")})
+	doc.AddBlock(block)
+
+	canonical := DumpsCanonical(doc)
+	lines := strings.Split(canonical, "\n")
+
+	// Extract data lines (skip header and field line)
+	dataLines := []string{}
+	for _, line := range lines {
+		if line != "" && !strings.HasPrefix(line, "table") && line != "id name" {
+			dataLines = append(dataLines, line)
+		}
+	}
+
+	// Rows with values come first, null keys last (numeric strings get quoted)
+	expected := []string{"\"1\" one", "\"2\" two", "~ orphan"}
+	assert.Equal(t, expected, dataLines)
+}
+
+// TestCanonicalIdempotent tests that canonical serialization is idempotent
+func TestCanonicalIdempotent(t *testing.T) {
+	doc := NewDocument()
+
+	block := NewBlock("table", "users")
+	block.AddField("id", "")
+	block.AddField("name", "")
+	block.AddRow(Row{"id": String("2"), "name": String("Bob")})
+	block.AddRow(Row{"id": String("1"), "name": String("Alice")})
+	doc.AddBlock(block)
+
+	canonical1 := DumpsCanonical(doc)
+	parsed, err := Parse(canonical1)
+	require.NoError(t, err)
+	canonical2 := DumpsCanonical(parsed)
+
+	assert.Equal(t, canonical1, canonical2)
+}
+
+// TestCanonicalNoAlignment tests that canonical output uses single space, no alignment
+func TestCanonicalNoAlignment(t *testing.T) {
+	doc := NewDocument()
+
+	block := NewBlock("table", "data")
+	block.AddField("short", "")
+	block.AddField("very_long_name", "")
+	block.AddRow(Row{"short": String("a"), "very_long_name": String("b")})
+	doc.AddBlock(block)
+
+	canonical := DumpsCanonical(doc)
+
+	// Should be single space between columns, not padded
+	assert.Contains(t, canonical, "short very_long_name")
+	assert.Contains(t, canonical, "a b")
+	// No padding after 'a' (would have extra spaces for alignment)
+	assert.NotContains(t, canonical, "a  ")
+}
+
+// TestCanonicalISONLBlocksSorted tests that ISONL blocks are sorted
+func TestCanonicalISONLBlocksSorted(t *testing.T) {
+	doc := NewDocument()
+
+	block1 := NewBlock("table", "zebras")
+	block1.AddField("id", "")
+	block1.AddRow(Row{"id": String("1")})
+	doc.AddBlock(block1)
+
+	block2 := NewBlock("table", "aardvarks")
+	block2.AddField("id", "")
+	block2.AddRow(Row{"id": String("2")})
+	doc.AddBlock(block2)
+
+	canonical, err := DumpsCanonicalISONL(doc)
+	require.NoError(t, err)
+
+	lines := strings.Split(canonical, "\n")
+
+	// First line should be aardvarks (alphabetically first)
+	assert.True(t, strings.HasPrefix(lines[0], "table.aardvarks"))
+	assert.True(t, strings.HasPrefix(lines[1], "table.zebras"))
+}
+
+// TestCanonicalISONLRowsSorted tests that ISONL rows are sorted by key
+func TestCanonicalISONLRowsSorted(t *testing.T) {
+	doc := NewDocument()
+
+	block := NewBlock("table", "items")
+	block.AddField("id", "")
+	block.AddField("val", "")
+	block.AddRow(Row{"id": String("c"), "val": String("three")})
+	block.AddRow(Row{"id": String("a"), "val": String("one")})
+	block.AddRow(Row{"id": String("b"), "val": String("two")})
+	doc.AddBlock(block)
+
+	canonical, err := DumpsCanonicalISONL(doc)
+	require.NoError(t, err)
+
+	lines := strings.Split(canonical, "\n")
+
+	// Should see a, b, c in order
+	idxA := -1
+	idxB := -1
+	idxC := -1
+
+	for i, line := range lines {
+		if strings.Contains(line, "a one") {
+			idxA = i
+		}
+		if strings.Contains(line, "b two") {
+			idxB = i
+		}
+		if strings.Contains(line, "c three") {
+			idxC = i
+		}
+	}
+
+	assert.Greater(t, idxA, -1, "row with 'a one' not found")
+	assert.Greater(t, idxB, -1, "row with 'b two' not found")
+	assert.Greater(t, idxC, -1, "row with 'c three' not found")
+	assert.Less(t, idxA, idxB)
+	assert.Less(t, idxB, idxC)
+}
+
+// TestCanonicalWithReferences tests that references are preserved and rows are sorted
+func TestCanonicalWithReferences(t *testing.T) {
+	doc := NewDocument()
+
+	block := NewBlock("table", "edges")
+	block.AddField("source", "")
+	block.AddField("target", "")
+	block.AddRow(Row{
+		"source": Ref(Reference{ID: "2"}),
+		"target": Ref(Reference{ID: "b"}),
+	})
+	block.AddRow(Row{
+		"source": Ref(Reference{ID: "1"}),
+		"target": Ref(Reference{ID: "a"}),
+	})
+	doc.AddBlock(block)
+
+	canonical := DumpsCanonical(doc)
+	lines := strings.Split(canonical, "\n")
+
+	// Extract data lines
+	dataLines := []string{}
+	for _, line := range lines {
+		if strings.HasPrefix(line, ":") {
+			dataLines = append(dataLines, line)
+		}
+	}
+
+	// Rows should be sorted by first column: :1 < :2
+	assert.Equal(t, ":1 :a", dataLines[0])
+	assert.Equal(t, ":2 :b", dataLines[1])
+}
+
+// TestCanonicalEmptyStringHandling tests that empty strings are quoted
+func TestCanonicalEmptyStringHandling(t *testing.T) {
+	doc := NewDocument()
+
+	block := NewBlock("table", "test")
+	block.AddField("id", "")
+	block.AddField("name", "")
+	block.AddRow(Row{"id": String("1"), "name": String("")})
+	block.AddRow(Row{"id": String("2"), "name": String("value")})
+	doc.AddBlock(block)
+
+	canonical := DumpsCanonical(doc)
+
+	// Empty string should be quoted
+	assert.Contains(t, canonical, "\"\"")
+}
+
+// TestCanonicalFieldInfoPreserved tests that field type annotations are preserved
+func TestCanonicalFieldInfoPreserved(t *testing.T) {
+	doc := NewDocument()
+
+	block := NewBlock("table", "typed")
+	block.AddField("id", "string")
+	block.AddField("count", "int")
+	block.AddRow(Row{"id": String("1"), "count": Int(42)})
+	doc.AddBlock(block)
+
+	canonical := DumpsCanonical(doc)
+
+	assert.Contains(t, canonical, "id:string count:int")
+}
+
+// TestCanonicalGoldenFixture tests the golden fixture from ison-py
+// This fixture is used for cross-implementation byte-identity verification.
+func TestCanonicalGoldenFixture(t *testing.T) {
+	doc := NewDocument()
+
+	// Edges block (added first, should sort to come before users alphabetically)
+	edges := NewBlock("table", "edges")
+	edges.AddField("source", "")
+	edges.AddField("target", "")
+	edges.AddRow(Row{
+		"source": Ref(Reference{ID: "2"}),
+		"target": Ref(Reference{ID: "1"}),
+	})
+	edges.AddRow(Row{
+		"source": Ref(Reference{ID: "1"}),
+		"target": Ref(Reference{ID: "3"}),
+	})
+	doc.AddBlock(edges)
+
+	// Users block
+	users := NewBlock("table", "users")
+	users.AddField("id", "")
+	users.AddField("name", "")
+	users.AddField("active", "")
+	users.AddRow(Row{"id": String("2"), "name": String("Bob"), "active": Bool(true)})
+	users.AddRow(Row{"id": String("1"), "name": String("Alice"), "active": Bool(true)})
+	users.AddRow(Row{"id": String("3"), "name": String("Charlie"), "active": Bool(false)})
+	doc.AddBlock(users)
+
+	canonical := DumpsCanonical(doc)
+
+	// Expected order: blocks sorted (edges < users), rows sorted within each
+	// Note: numeric strings like "1", "2", "3" are quoted by the serializer
+	expectedLines := []string{
+		"table.edges",
+		"source target",
+		":1 :3",
+		":2 :1",
+		"",
+		"table.users",
+		"id name active",
+		"\"1\" Alice true",
+		"\"2\" Bob true",
+		"\"3\" Charlie false",
+	}
+	expected := strings.Join(expectedLines, "\n")
+
+	assert.Equal(t, expected, canonical)
+}
