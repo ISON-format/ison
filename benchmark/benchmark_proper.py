@@ -4,10 +4,15 @@ PROPER BENCHMARK: ISONCS vs ISON with Statistical Rigor
 
 Fixes all four problems from the naive benchmark:
 1. Multiple runs with min/median/max/stdev (noise quantification)
-2. Canonicalization test: different insertion orders -> identical bytes
-3. No false claims about prompt caching (untested)
-4. Actual token counting via tiktoken (not byte guessing)
+2. Canonicalization test: different insertion orders AND key orders -> identical bytes
+3. No false claims about prompt caching (untested; prefix stability measured separately)
+4. Actual token counting via tiktoken (not byte guessing) or byte ratios with caveats
 5. Speed gap attributed to Python vs C, not format design
+
+CROSS-PORT TESTING NOTE:
+This benchmark runs through ison-py only. Full canonicalization testing requires
+the same fixture through all six implementations (Go, Rust, C++, JS, TS, C#) to verify
+byte-identical output. That's the real test for content addressing.
 """
 
 import json
@@ -96,14 +101,14 @@ def to_ison_canonical(data):
 # =============================================================================
 
 def test_canonicalization():
-    """Test that different insertion orders produce identical canonical output."""
+    """Test canonicalization across different insertion orders and key orders."""
     data = create_test_data()
 
-    # Order 1: users, products, orders
+    # Test 1: Block insertion order (users→products→orders, etc.)
     doc1 = ison_parser.from_dict(data, auto_refs=True, smart_order=True)
     canonical1 = ison_parser.dumps_canonical(doc1)
 
-    # Order 2: orders, products, users (reordered data dict)
+    # Reorder blocks: orders→products→users
     reordered_data = {
         "orders": data["orders"],
         "products": data["products"],
@@ -112,7 +117,7 @@ def test_canonicalization():
     doc2 = ison_parser.from_dict(reordered_data, auto_refs=True, smart_order=True)
     canonical2 = ison_parser.dumps_canonical(doc2)
 
-    # Order 3: products, users, orders
+    # Reorder blocks: products→users→orders
     another_order = {
         "products": data["products"],
         "users": data["users"],
@@ -121,15 +126,41 @@ def test_canonicalization():
     doc3 = ison_parser.from_dict(another_order, auto_refs=True, smart_order=True)
     canonical3 = ison_parser.dumps_canonical(doc3)
 
+    # Test 2: Key order within records (reorder dict keys in a user)
+    # This tests whether HashMap/dict iteration order affects output
+    data_with_reordered_keys = data.copy()
+    data_with_reordered_keys["users"] = [
+        {
+            "score": u["score"],      # Different order
+            "active": u["active"],
+            "name": u["name"],
+            "email": u["email"],
+            "id": u["id"],
+        }
+        for u in data["users"]
+    ]
+    doc4 = ison_parser.from_dict(data_with_reordered_keys, auto_refs=True, smart_order=True)
+    canonical4 = ison_parser.dumps_canonical(doc4)
+
     results = {
         "test": "canonicalization",
-        "order1_bytes": len(canonical1),
-        "order2_bytes": len(canonical2),
-        "order3_bytes": len(canonical3),
-        "order1_eq_order2": canonical1 == canonical2,
-        "order1_eq_order3": canonical1 == canonical3,
-        "order2_eq_order3": canonical2 == canonical3,
-        "all_equal": canonical1 == canonical2 == canonical3,
+        "block_insertion_orders": {
+            "order1_bytes": len(canonical1),
+            "order2_bytes": len(canonical2),
+            "order3_bytes": len(canonical3),
+            "order1_eq_order2": canonical1 == canonical2,
+            "order1_eq_order3": canonical1 == canonical3,
+            "order2_eq_order3": canonical2 == canonical3,
+            "all_block_orders_equal": canonical1 == canonical2 == canonical3,
+        },
+        "key_order_test": {
+            "note": "Field order NOT sorted by dumps_canonical; uses Document field order from parser",
+            "canonical_with_reordered_keys_bytes": len(canonical4),
+            "field_order_stable": canonical1 == canonical4,
+            "different_field_orders_produce_different_output": canonical1 != canonical4,
+        },
+        "all_equal": canonical1 == canonical2 == canonical3 == canonical4,
+        "canonical_output_bytes": len(canonical1),
     }
 
     return results
@@ -174,8 +205,8 @@ def run_benchmark(num_runs=20):
 
     results["ison_eq_isoncs"] = ison_output == canonical_output
 
-    # Timing runs
-    print(f"Running {num_runs} iterations per format...")
+    # Timing runs (serialization only; data generation outside timed region)
+    print(f"Running {num_runs} iterations per format (serialization only)...")
 
     for format_name, serializer in [
         ("json", lambda: to_json(data)),
@@ -265,17 +296,26 @@ def main():
     print("=" * 90 + "\n")
 
     # Run canonicalization test
-    print("TEST 1: Canonicalization (different insertion orders)")
+    print("TEST 1: Canonicalization")
     canon_result = test_canonicalization()
-    print(f"  Order 1: {canon_result['order1_bytes']} bytes")
-    print(f"  Order 2: {canon_result['order2_bytes']} bytes")
-    print(f"  Order 3: {canon_result['order3_bytes']} bytes")
-    print(f"  All equal: {canon_result['all_equal']}")
+
+    print("  Block insertion order (A-B-C, C-B-A, B-A-C):")
+    print(f"    Order 1: {canon_result['block_insertion_orders']['order1_bytes']} bytes")
+    print(f"    Order 2: {canon_result['block_insertion_orders']['order2_bytes']} bytes")
+    print(f"    Order 3: {canon_result['block_insertion_orders']['order3_bytes']} bytes")
+    print(f"    All equal: {canon_result['block_insertion_orders']['all_block_orders_equal']}")
+
+    print("  Field order within records:")
+    print(f"    {canon_result['key_order_test']['note']}")
+    print(f"    Canonical output: {canon_result['key_order_test']['canonical_with_reordered_keys_bytes']} bytes")
+    print(f"    Stable across field orders: {canon_result['key_order_test']['field_order_stable']}")
 
     if canon_result["all_equal"]:
-        print("  RESULT: PASS - Different insertion orders produce identical output")
+        print("\n  RESULT: PASS - Stable across both block insertion order and field order")
     else:
-        print("  RESULT: FAIL - Outputs differ across insertion orders (canonicalization broken)")
+        print("\n  FINDING: Block insertion order stable, but field order affects output")
+        print("  RECOMMENDATION: For true content-addressed canonicalization,")
+        print("    dump_canonical should also sort fields alphabetically")
 
     # Run benchmarks
     print("\nTEST 2: Serialization Performance (3 runs of 20 iterations each)")

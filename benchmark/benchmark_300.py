@@ -282,8 +282,26 @@ def to_ison(data: dict) -> str:
     return ison_parser.dumps(doc, align_columns=False)
 
 
+def to_ison_canonical(data: dict) -> str:
+    """Convert to ISONCS (canonical ISON) format for deterministic output.
+
+    Uses ison_parser.from_dict() with:
+    - auto_refs=True to auto-detect foreign keys and convert to references
+    - smart_order=True to reorder columns for optimal LLM comprehension
+
+    Applies canonical serialization:
+    - Blocks sorted ordinal-string by kind.name
+    - Rows within each block sorted by first column (id)
+    - Single-space delimiter, no alignment
+    - Produces byte-identical output across all implementations
+    """
+    doc = ison_parser.from_dict(data, auto_refs=True, smart_order=True)
+    return ison_parser.dumps_canonical(doc)
+
+
 FORMATS = {
     "ISON": to_ison,
+    "ISONCS": to_ison_canonical,
     "TOON": to_toon,
     "JSON Compact": to_json_compact,
     "JSON": to_json_pretty,

@@ -860,6 +860,287 @@ content
 }
 
 // =============================================================================
+// Canonical Serialization Tests
+// =============================================================================
+
+TEST(canonical_blocks_sorted) {
+    // Blocks should be sorted ordinal-string by kind.name
+    Document doc;
+
+    Block users("table", "users");
+    users.fields.push_back("id");
+    users.fields.push_back("name");
+    Row row1;
+    row1["id"] = Value(static_cast<int64_t>(2));
+    row1["name"] = Value("Bob");
+    users.rows.push_back(row1);
+    doc.blocks.push_back(users);
+
+    Block active_users("table", "active_users");
+    active_users.fields.push_back("id");
+    active_users.fields.push_back("name");
+    Row row2;
+    row2["id"] = Value(static_cast<int64_t>(1));
+    row2["name"] = Value("Alice");
+    active_users.rows.push_back(row2);
+    doc.blocks.push_back(active_users);
+
+    std::string canonical = dumps_canonical(doc);
+
+    // Blocks should be in ordinal order: table.active_users < table.users
+    size_t pos_active = canonical.find("table.active_users");
+    size_t pos_users = canonical.find("table.users");
+    ASSERT(pos_active != std::string::npos && pos_users != std::string::npos);
+    ASSERT(pos_active < pos_users);
+}
+
+TEST(canonical_rows_sorted_by_key) {
+    // Rows should be sorted ordinal-string by first column value
+    Document doc;
+
+    Block items("table", "items");
+    items.fields.push_back("id");
+    items.fields.push_back("name");
+
+    Row row1;
+    row1["id"] = Value("10");
+    row1["name"] = Value("ten");
+    items.rows.push_back(row1);
+
+    Row row2;
+    row2["id"] = Value("2");
+    row2["name"] = Value("two");
+    items.rows.push_back(row2);
+
+    Row row3;
+    row3["id"] = Value("1");
+    row3["name"] = Value("one");
+    items.rows.push_back(row3);
+
+    doc.blocks.push_back(items);
+
+    std::string canonical = dumps_canonical(doc);
+
+    // Ordinal sort: "1" < "10" < "2" (strings compared ordinal)
+    size_t pos_1 = canonical.find("\"1\"");
+    size_t pos_10 = canonical.find("\"10\"");
+    size_t pos_2 = canonical.find("\"2\"");
+    ASSERT(pos_1 < pos_10 && pos_10 < pos_2);
+}
+
+TEST(canonical_null_keys_sort_last) {
+    // Rows with null in the key column should sort to the end
+    Document doc;
+
+    Block items("table", "items");
+    items.fields.push_back("id");
+    items.fields.push_back("name");
+
+    Row row1;
+    row1["id"] = Value("2");
+    row1["name"] = Value("two");
+    items.rows.push_back(row1);
+
+    Row row2;
+    row2["id"] = Value(nullptr);
+    row2["name"] = Value("orphan");
+    items.rows.push_back(row2);
+
+    Row row3;
+    row3["id"] = Value("1");
+    row3["name"] = Value("one");
+    items.rows.push_back(row3);
+
+    doc.blocks.push_back(items);
+
+    std::string canonical = dumps_canonical(doc);
+
+    // Rows with values come first, null keys last
+    size_t pos_1 = canonical.find("\"1\"");
+    size_t pos_2 = canonical.find("\"2\"");
+    size_t pos_null = canonical.find("null orphan");
+    ASSERT(pos_1 < pos_2 && pos_2 < pos_null);
+}
+
+TEST(canonical_no_alignment) {
+    // Canonical output should use single space, no alignment padding
+    Document doc;
+
+    Block data("table", "data");
+    data.fields.push_back("short");
+    data.fields.push_back("very_long_name");
+    Row row;
+    row["short"] = Value("a");
+    row["very_long_name"] = Value("b");
+    data.rows.push_back(row);
+    doc.blocks.push_back(data);
+
+    std::string canonical = dumps_canonical(doc);
+
+    // Should contain "a b" (single space), not "a  " (padding)
+    ASSERT(canonical.find("a b") != std::string::npos);
+    ASSERT(canonical.find("a  ") == std::string::npos);
+}
+
+TEST(canonical_golden_fixture) {
+    /**
+     * Golden fixture: a standard document serialized to canonical form.
+     * This fixture is used for cross-implementation byte-identity verification.
+     */
+    Document doc;
+
+    // Edges block (added second, should sort first alphabetically)
+    Block edges("table", "edges");
+    edges.fields.push_back("source");
+    edges.fields.push_back("target");
+
+    Row edge1;
+    edge1["source"] = Value(std::make_shared<Reference>("2"));
+    edge1["target"] = Value(std::make_shared<Reference>("1"));
+    edges.rows.push_back(edge1);
+
+    Row edge2;
+    edge2["source"] = Value(std::make_shared<Reference>("1"));
+    edge2["target"] = Value(std::make_shared<Reference>("3"));
+    edges.rows.push_back(edge2);
+
+    doc.blocks.push_back(edges);
+
+    // Users block (added first, should sort second alphabetically)
+    Block users("table", "users");
+    users.fields.push_back("id");
+    users.fields.push_back("name");
+    users.fields.push_back("active");
+
+    Row user1;
+    user1["id"] = Value("2");
+    user1["name"] = Value("Bob");
+    user1["active"] = Value(true);
+    users.rows.push_back(user1);
+
+    Row user2;
+    user2["id"] = Value("1");
+    user2["name"] = Value("Alice");
+    user2["active"] = Value(true);
+    users.rows.push_back(user2);
+
+    Row user3;
+    user3["id"] = Value("3");
+    user3["name"] = Value("Charlie");
+    user3["active"] = Value(false);
+    users.rows.push_back(user3);
+
+    doc.blocks.push_back(users);
+
+    std::string canonical = dumps_canonical(doc);
+
+    // Expected output with blocks sorted (edges < users) and rows sorted within each
+    std::string expected = R"(table.edges
+source target
+:1 :3
+:2 :1
+
+table.users
+id name active
+"1" Alice true
+"2" Bob true
+"3" Charlie false)";
+
+    ASSERT_EQ(canonical, expected);
+}
+
+TEST(canonical_isonl_blocks_sorted) {
+    // ISONL canonical should also sort blocks
+    Document doc;
+
+    Block zebras("table", "zebras");
+    zebras.fields.push_back("id");
+    Row row1;
+    row1["id"] = Value("1");
+    zebras.rows.push_back(row1);
+    doc.blocks.push_back(zebras);
+
+    Block aardvarks("table", "aardvarks");
+    aardvarks.fields.push_back("id");
+    Row row2;
+    row2["id"] = Value("2");
+    aardvarks.rows.push_back(row2);
+    doc.blocks.push_back(aardvarks);
+
+    std::string canonical_isonl = dumps_canonical_isonl(doc);
+
+    // First line should be aardvarks (alphabetically first)
+    ASSERT(canonical_isonl.find("table.aardvarks") != std::string::npos);
+    ASSERT(canonical_isonl.find("table.zebras") != std::string::npos);
+    size_t pos_a = canonical_isonl.find("table.aardvarks");
+    size_t pos_z = canonical_isonl.find("table.zebras");
+    ASSERT(pos_a < pos_z);
+}
+
+TEST(canonical_isonl_rows_sorted) {
+    // ISONL canonical should sort rows by key
+    Document doc;
+
+    Block items("table", "items");
+    items.fields.push_back("id");
+    items.fields.push_back("val");
+
+    Row row1;
+    row1["id"] = Value("c");
+    row1["val"] = Value("three");
+    items.rows.push_back(row1);
+
+    Row row2;
+    row2["id"] = Value("a");
+    row2["val"] = Value("one");
+    items.rows.push_back(row2);
+
+    Row row3;
+    row3["id"] = Value("b");
+    row3["val"] = Value("two");
+    items.rows.push_back(row3);
+
+    doc.blocks.push_back(items);
+
+    std::string canonical_isonl = dumps_canonical_isonl(doc);
+
+    // Should see a, b, c in order
+    size_t pos_a = canonical_isonl.find("a one");
+    size_t pos_b = canonical_isonl.find("b two");
+    size_t pos_c = canonical_isonl.find("c three");
+    ASSERT(pos_a < pos_b && pos_b < pos_c);
+}
+
+TEST(canonical_with_references) {
+    // Canonical serialization should preserve references and sort rows
+    Document doc;
+
+    Block edges("table", "edges");
+    edges.fields.push_back("source");
+    edges.fields.push_back("target");
+
+    Row row1;
+    row1["source"] = Value(std::make_shared<Reference>("2"));
+    row1["target"] = Value(std::make_shared<Reference>("b"));
+    edges.rows.push_back(row1);
+
+    Row row2;
+    row2["source"] = Value(std::make_shared<Reference>("1"));
+    row2["target"] = Value(std::make_shared<Reference>("a"));
+    edges.rows.push_back(row2);
+
+    doc.blocks.push_back(edges);
+
+    std::string canonical = dumps_canonical(doc);
+
+    // Rows should be sorted by first column: :1 < :2
+    size_t pos_1 = canonical.find(":1 :a");
+    size_t pos_2 = canonical.find(":2 :b");
+    ASSERT(pos_1 != std::string::npos && pos_2 != std::string::npos);
+    ASSERT(pos_1 < pos_2);
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
@@ -931,6 +1212,16 @@ int main() {
     RUN_TEST(only_comments);
     RUN_TEST(empty_table);
     RUN_TEST(special_characters_in_values);
+
+    // Canonical serialization
+    RUN_TEST(canonical_blocks_sorted);
+    RUN_TEST(canonical_rows_sorted_by_key);
+    RUN_TEST(canonical_null_keys_sort_last);
+    RUN_TEST(canonical_no_alignment);
+    RUN_TEST(canonical_golden_fixture);
+    RUN_TEST(canonical_isonl_blocks_sorted);
+    RUN_TEST(canonical_isonl_rows_sorted);
+    RUN_TEST(canonical_with_references);
 
     std::cout << std::endl;
     std::cout << "=== Results ===" << std::endl;

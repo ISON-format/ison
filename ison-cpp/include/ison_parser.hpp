@@ -780,6 +780,153 @@ public:
         return result;
     }
 
+    /**
+     * Serialize a Document to canonical ISON string.
+     *
+     * Canonical form sorts blocks and rows ordinal-string on their keys,
+     * uses single-space delimiter and no alignment, producing byte-identical
+     * output across implementations for the same logical data.
+     *
+     * The key for each row is the first column's value (conventionally 'id').
+     * Rows with null in the key column sort after rows with values.
+     */
+    static std::string dumps_canonical(const Document& doc) {
+        std::vector<const Block*> sorted_blocks;
+        for (size_t i = 0; i < doc.blocks.size(); ++i) {
+            sorted_blocks.push_back(&doc.blocks[i]);
+        }
+
+        // Sort blocks ordinal-string by key (kind.name)
+        std::sort(sorted_blocks.begin(), sorted_blocks.end(),
+                  [](const Block* a, const Block* b) {
+                      std::string a_key = a->kind + "." + a->name;
+                      std::string b_key = b->kind + "." + b->name;
+                      return a_key < b_key;
+                  });
+
+        std::string result;
+        for (size_t i = 0; i < sorted_blocks.size(); ++i) {
+            if (i > 0) result += "\n\n";
+            result += serialize_block_canonical(*sorted_blocks[i]);
+        }
+        return result;
+    }
+
+private:
+    /**
+     * Serialize a single block in canonical form (sorted rows, no alignment).
+     */
+    static std::string serialize_block_canonical(const Block& block) {
+        std::vector<std::string> lines;
+        lines.push_back(block.kind + "." + block.name);
+
+        // Fields line (with type annotations if present)
+        std::string fields_line;
+        for (size_t i = 0; i < block.field_info.size(); ++i) {
+            if (i > 0) fields_line += " ";
+            const FieldInfo& fi = block.field_info[i];
+            if (fi.type.has_value()) {
+                fields_line += fi.name + ":" + fi.type.value();
+            } else {
+                fields_line += fi.name;
+            }
+        }
+        if (fields_line.empty() && !block.fields.empty()) {
+            for (size_t i = 0; i < block.fields.size(); ++i) {
+                if (i > 0) fields_line += " ";
+                fields_line += block.fields[i];
+            }
+        }
+        lines.push_back(fields_line);
+
+        // Sort rows ordinal-string by first column value (key)
+        std::vector<const Row*> sorted_rows;
+        for (size_t i = 0; i < block.rows.size(); ++i) {
+            sorted_rows.push_back(&block.rows[i]);
+        }
+
+        if (!block.fields.empty()) {
+            const std::string& key_field = block.fields[0];
+            std::sort(sorted_rows.begin(), sorted_rows.end(),
+                      [&key_field](const Row* a, const Row* b) {
+                          Row::const_iterator it_a = a->find(key_field);
+                          Row::const_iterator it_b = b->find(key_field);
+
+                          Value val_a = (it_a != a->end()) ? it_a->second : Value(nullptr);
+                          Value val_b = (it_b != b->end()) ? it_b->second : Value(nullptr);
+
+                          // Rows with null key sort to the end
+                          bool a_null = val_a.is_null();
+                          bool b_null = val_b.is_null();
+
+                          if (a_null && b_null) return false;  // Both null, maintain order
+                          if (a_null) return false;            // a is null, b comes first
+                          if (b_null) return true;             // b is null, a comes first
+
+                          // Both have values, ordinal-string comparison
+                          std::string str_a = value_to_sort_string(val_a);
+                          std::string str_b = value_to_sort_string(val_b);
+                          return str_a < str_b;
+                      });
+        }
+
+        // Data rows (no alignment, single-space delimiter)
+        for (size_t i = 0; i < sorted_rows.size(); ++i) {
+            const Row& row = *sorted_rows[i];
+            std::string row_line;
+            for (size_t j = 0; j < block.fields.size(); ++j) {
+                if (j > 0) row_line += " ";
+                std::string str_value = "null";
+                Row::const_iterator it = row.find(block.fields[j]);
+                if (it != row.end()) {
+                    str_value = value_to_ison(it->second);
+                }
+                row_line += str_value;
+            }
+            // Trim trailing whitespace
+            while (!row_line.empty() && (row_line[row_line.size()-1] == ' ' || row_line[row_line.size()-1] == '\t')) {
+                row_line.erase(row_line.size()-1);
+            }
+            lines.push_back(row_line);
+        }
+
+        // Summary row (if present)
+        if (block.summary.has_value()) {
+            lines.push_back("---");
+            lines.push_back(block.summary.value());
+        }
+
+        std::string result;
+        for (size_t i = 0; i < lines.size(); ++i) {
+            if (i > 0) result += "\n";
+            result += lines[i];
+        }
+        return result;
+    }
+
+    /**
+     * Convert a value to a string for ordinal-string sorting.
+     * Preserves the value as-is for comparison purposes.
+     */
+    static std::string value_to_sort_string(const Value& v) {
+        switch (v.type()) {
+            case ValueType::Null: return "";  // null values sort to end
+            case ValueType::Bool: return v.as_bool() ? "true" : "false";
+            case ValueType::Int: return std::to_string(v.as_int());
+            case ValueType::Float: {
+                std::ostringstream oss;
+                oss << v.as_float();
+                return oss.str();
+            }
+            case ValueType::String: return v.as_string();
+            case ValueType::Reference: {
+                std::shared_ptr<Reference> r = v.as_reference_ptr();
+                return r ? r->to_ison() : "";
+            }
+        }
+        return "";
+    }
+
 private:
     static std::string serialize_block(const Block& block, bool align_columns) {
         std::vector<std::string> lines;
@@ -1214,7 +1361,117 @@ public:
         return oss.str();
     }
 
+    /**
+     * Serialize a Document to canonical ISONL string.
+     *
+     * Blocks are sorted ordinal-string by key (kind.name), rows within
+     * each block are sorted ordinal-string by first column value, producing
+     * byte-identical output across implementations for the same logical data.
+     */
+    static std::string dumps_canonical(const Document& doc) {
+        std::vector<const Block*> sorted_blocks;
+        for (size_t i = 0; i < doc.blocks.size(); ++i) {
+            sorted_blocks.push_back(&doc.blocks[i]);
+        }
+
+        // Sort blocks ordinal-string by key (kind.name)
+        std::sort(sorted_blocks.begin(), sorted_blocks.end(),
+                  [](const Block* a, const Block* b) {
+                      std::string a_key = a->kind + "." + a->name;
+                      std::string b_key = b->kind + "." + b->name;
+                      return a_key < b_key;
+                  });
+
+        std::ostringstream oss;
+        bool first = true;
+
+        for (size_t bi = 0; bi < sorted_blocks.size(); ++bi) {
+            const Block& block = *sorted_blocks[bi];
+            validate_envelope(block);
+            std::string header = block.kind + "." + block.name;
+
+            std::string fields_str;
+            for (size_t i = 0; i < block.fields.size(); ++i) {
+                if (i > 0) fields_str += " ";
+                fields_str += block.fields[i];
+            }
+
+            // Sort rows by first column value (key)
+            std::vector<const Row*> sorted_rows;
+            for (size_t i = 0; i < block.rows.size(); ++i) {
+                sorted_rows.push_back(&block.rows[i]);
+            }
+
+            if (!block.fields.empty()) {
+                const std::string& key_field = block.fields[0];
+                std::sort(sorted_rows.begin(), sorted_rows.end(),
+                          [&key_field](const Row* a, const Row* b) {
+                              Row::const_iterator it_a = a->find(key_field);
+                              Row::const_iterator it_b = b->find(key_field);
+
+                              Value val_a = (it_a != a->end()) ? it_a->second : Value(nullptr);
+                              Value val_b = (it_b != b->end()) ? it_b->second : Value(nullptr);
+
+                              // Rows with null key sort to the end
+                              bool a_null = val_a.is_null();
+                              bool b_null = val_b.is_null();
+
+                              if (a_null && b_null) return false;  // Both null, maintain order
+                              if (a_null) return false;            // a is null, b comes first
+                              if (b_null) return true;             // b is null, a comes first
+
+                              // Both have values, ordinal-string comparison
+                              std::string str_a = value_to_sort_string(val_a);
+                              std::string str_b = value_to_sort_string(val_b);
+                              return str_a < str_b;
+                          });
+            }
+
+            for (size_t ri = 0; ri < sorted_rows.size(); ++ri) {
+                if (!first) oss << "\n";
+                first = false;
+
+                const Row& row = *sorted_rows[ri];
+                std::string values_str;
+                for (size_t i = 0; i < block.fields.size(); ++i) {
+                    if (i > 0) values_str += " ";
+                    Row::const_iterator it = row.find(block.fields[i]);
+                    if (it != row.end()) {
+                        values_str += value_to_isonl(it->second);
+                    } else {
+                        values_str += "null";
+                    }
+                }
+
+                oss << header << "|" << fields_str << "|" << values_str;
+            }
+        }
+
+        return oss.str();
+    }
+
 private:
+    /**
+     * Convert a value to a string for ordinal-string sorting.
+     */
+    static std::string value_to_sort_string(const Value& v) {
+        switch (v.type()) {
+            case ValueType::Null: return "";  // null values sort to end
+            case ValueType::Bool: return v.as_bool() ? "true" : "false";
+            case ValueType::Int: return std::to_string(v.as_int());
+            case ValueType::Float: {
+                std::ostringstream oss;
+                oss << v.as_float();
+                return oss.str();
+            }
+            case ValueType::String: return v.as_string();
+            case ValueType::Reference: {
+                std::shared_ptr<Reference> r = v.as_reference_ptr();
+                return r ? r->to_ison() : "";
+            }
+        }
+        return "";
+    }
     // Characters that would corrupt the line structure if they appeared
     // raw in the envelope (kind, name, or field names)
     static bool envelope_char_forbidden(char c) {
@@ -1349,6 +1606,10 @@ inline std::string dumps(const Document& doc, bool align_columns = false, const 
     return Serializer::dumps(doc, align_columns);
 }
 
+inline std::string dumps_canonical(const Document& doc) {
+    return Serializer::dumps_canonical(doc);
+}
+
 inline void dump(const Document& doc, const std::string& path, bool align_columns = true) {
     std::ofstream file(path.c_str());
     if (!file.is_open()) {
@@ -1364,6 +1625,10 @@ inline Document loads_isonl(const std::string& text) {
 
 inline std::string dumps_isonl(const Document& doc) {
     return ISONLSerializer::dumps(doc);
+}
+
+inline std::string dumps_canonical_isonl(const Document& doc) {
+    return ISONLSerializer::dumps_canonical(doc);
 }
 
 inline std::string ison_to_isonl(const std::string& ison_text) {

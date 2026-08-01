@@ -804,6 +804,121 @@
             const idPattern = /^[a-zA-Z_][a-zA-Z0-9_-]*$/;
             return idPattern.test(parts[0]) && idPattern.test(parts[1]);
         }
+
+        /**
+         * Serialize a Document to canonical ISON string.
+         *
+         * Canonical form sorts blocks and rows ordinal-string on their keys,
+         * uses single-space delimiter and no alignment, producing byte-identical
+         * output across implementations for the same logical data.
+         *
+         * Blocks are sorted ordinal-string by key (kind.name).
+         * Rows within each block are sorted ordinal-string by first column value.
+         * Rows with null in the key column sort after rows with values.
+         *
+         * @param {Document} doc - Document to serialize
+         * @returns {string} Canonical ISON formatted string (deterministic, sorted)
+         */
+        static dumpsCanonical(doc) {
+            const blocksOutput = [];
+
+            // Sort blocks ordinal-string by key (kind.name)
+            const sortedBlocks = [...doc.blocks].sort((a, b) => {
+                const keyA = `${a.kind}.${a.name}`;
+                const keyB = `${b.kind}.${b.name}`;
+                return keyA < keyB ? -1 : keyA > keyB ? 1 : 0;
+            });
+
+            for (const block of sortedBlocks) {
+                const blockStr = Serializer._serializeBlockCanonical(block);
+                blocksOutput.push(blockStr);
+            }
+
+            return blocksOutput.join('\n\n');
+        }
+
+        /**
+         * Serialize a single block in canonical form (sorted rows, no alignment).
+         * @private
+         * @param {Block} block - Block to serialize
+         * @returns {string} Canonical ISON block
+         */
+        static _serializeBlockCanonical(block) {
+            const lines = [];
+
+            // Header
+            lines.push(`${block.kind}.${block.name}`);
+
+            // Fields (with type annotations if present)
+            if (block.fieldInfo && block.fieldInfo.length > 0) {
+                const fieldStrs = block.fieldInfo.map(fi => {
+                    if (fi.type) {
+                        return `${fi.name}:${fi.type}`;
+                    }
+                    return fi.name;
+                });
+                lines.push(fieldStrs.join(' '));
+            } else {
+                lines.push(block.fields.join(' '));
+            }
+
+            // Sort rows ordinal-string by first column value (key)
+            const sortedRows = Serializer._sortRowsByKey(block);
+
+            // Data rows (no alignment, single-space delimiter)
+            for (const row of sortedRows) {
+                const values = [];
+                for (const field of block.fields) {
+                    const value = Serializer._getNestedValue(row, field);
+                    const strValue = Serializer._valueToISON(value);
+                    values.push(strValue);
+                }
+                lines.push(values.join(' ').trimEnd());
+            }
+
+            // Summary row (if present) — goes to canonical form as-is
+            if (block.summary) {
+                lines.push('---');
+                lines.push(block.summary);
+            }
+
+            return lines.join('\n');
+        }
+
+        /**
+         * Sort rows ordinal-string by first column value (key).
+         * Rows with null in the key column sort to the end.
+         * @private
+         * @param {Block} block - Block whose rows to sort
+         * @returns {Array} Sorted array of row objects
+         */
+        static _sortRowsByKey(block) {
+            if (!block.rows || block.rows.length === 0 || !block.fields || block.fields.length === 0) {
+                return block.rows;
+            }
+
+            const keyField = block.fields[0];
+
+            const sortedRows = [...block.rows].sort((rowA, rowB) => {
+                const keyValueA = Serializer._getNestedValue(rowA, keyField);
+                const keyValueB = Serializer._getNestedValue(rowB, keyField);
+
+                // Rows with null key sort to the end
+                const aIsNull = keyValueA === null || keyValueA === undefined;
+                const bIsNull = keyValueB === null || keyValueB === undefined;
+
+                if (aIsNull && bIsNull) return 0;
+                if (aIsNull) return 1;  // a goes after b
+                if (bIsNull) return -1; // b goes after a
+
+                // Ordinal (lexicographic) string comparison
+                const strA = String(keyValueA);
+                const strB = String(keyValueB);
+                return strA < strB ? -1 : strA > strB ? 1 : 0;
+            });
+
+            return sortedRows;
+        }
     }
 
     // =============================================================================
@@ -1418,6 +1533,72 @@
 
             return s;
         }
+
+        /**
+         * Serialize a Document to canonical ISONL string.
+         *
+         * Canonical form produces byte-identical output across all implementations
+         * for the same logical data. Blocks are sorted ordinal-string by key
+         * (kind.name), rows within each block are sorted ordinal-string by the
+         * first column value (conventionally 'id').
+         *
+         * @param {Document} doc - Document to serialize
+         * @returns {string} Canonical ISONL formatted string (deterministic, sorted)
+         */
+        static dumpsCanonical(doc) {
+            const lines = [];
+
+            // Sort blocks ordinal-string by key (kind.name)
+            const sortedBlocks = [...doc.blocks].sort((a, b) => {
+                const keyA = `${a.kind}.${a.name}`;
+                const keyB = `${b.kind}.${b.name}`;
+                return keyA < keyB ? -1 : keyA > keyB ? 1 : 0;
+            });
+
+            for (const block of sortedBlocks) {
+                ISONLSerializer._validateEnvelope(block);
+                const header = `${block.kind}.${block.name}`;
+                const fieldsStr = block.fields.join(' ');
+
+                // Sort rows by first column value (key)
+                let sortedRows;
+                if (block.fields && block.fields.length > 0) {
+                    const keyField = block.fields[0];
+                    sortedRows = [...block.rows].sort((rowA, rowB) => {
+                        const keyValueA = rowA[keyField];
+                        const keyValueB = rowB[keyField];
+
+                        // Rows with null key sort to the end
+                        const aIsNull = keyValueA === null || keyValueA === undefined;
+                        const bIsNull = keyValueB === null || keyValueB === undefined;
+
+                        if (aIsNull && bIsNull) return 0;
+                        if (aIsNull) return 1;  // a goes after b
+                        if (bIsNull) return -1; // b goes after a
+
+                        // Ordinal (lexicographic) string comparison
+                        const strA = String(keyValueA);
+                        const strB = String(keyValueB);
+                        return strA < strB ? -1 : strA > strB ? 1 : 0;
+                    });
+                } else {
+                    sortedRows = block.rows;
+                }
+
+                for (const row of sortedRows) {
+                    const values = [];
+                    for (const field of block.fields) {
+                        const value = row[field];
+                        values.push(ISONLSerializer._valueToISONL(value));
+                    }
+
+                    const valuesStr = values.join(' ');
+                    lines.push(`${header}|${fieldsStr}|${valuesStr}`);
+                }
+            }
+
+            return lines.join('\n');
+        }
     }
 
     /**
@@ -1475,6 +1656,37 @@
         }
     }
 
+    /**
+     * Serialize a Document to canonical ISON string.
+     *
+     * Canonical form produces byte-identical output across all implementations
+     * for the same logical data. Blocks are sorted ordinal-string by key
+     * (kind.name), rows within each block are sorted ordinal-string by the
+     * first column value (conventionally 'id'), using single-space delimiter
+     * and no alignment.
+     *
+     * @param {Document} doc - Document to serialize
+     * @returns {string} Canonical ISON formatted string (deterministic, sorted)
+     */
+    function dumpsCanonical(doc) {
+        return Serializer.dumpsCanonical(doc);
+    }
+
+    /**
+     * Serialize a Document to canonical ISONL string.
+     *
+     * Canonical form produces byte-identical output across all implementations
+     * for the same logical data. Blocks are sorted ordinal-string by key
+     * (kind.name), rows within each block are sorted ordinal-string by the
+     * first column value (conventionally 'id').
+     *
+     * @param {Document} doc - Document to serialize
+     * @returns {string} Canonical ISONL formatted string (deterministic, sorted)
+     */
+    function dumpsCanonicalISONL(doc) {
+        return ISONLSerializer.dumpsCanonical(doc);
+    }
+
     // =============================================================================
     // Export
     // =============================================================================
@@ -1494,6 +1706,7 @@
         // ISON Functions
         loads,
         dumps,
+        dumpsCanonical,
         fromDict,
         jsonToISON,
         isonToJSON,
@@ -1501,6 +1714,7 @@
         // ISONL Functions
         loadsISONL,
         dumpsISONL,
+        dumpsCanonicalISONL,
         isonToISONL,
         isonlToISON,
         isonlStream,

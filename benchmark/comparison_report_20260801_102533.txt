@@ -4,8 +4,17 @@ BENCHMARK COMPARISON REPORT - PROPER STATISTICAL ANALYSIS
 
 FINDINGS (9 runs, 180 total iterations)
 
-1. CANONICALIZATION TEST: PASS
-   Different insertion orders produce byte-identical output across all runs.
+1. CANONICALIZATION TEST
+   Block insertion order (A-B-C, C-B-A, B-A-C):
+     All three orders produce identical 8,753-byte output: PASS
+
+   Field order within records:
+     Different input field orders produce different output: CAVEAT
+     FINDING: dumps_canonical does not sort fields alphabetically; it preserves
+       the Document field order from the parser, which depends on input order.
+     RECOMMENDATION: For true content-addressed canonicalization (required for
+       HashMap/dict iteration order independence across implementations), fields
+       should be sorted alphabetically as well as blocks and rows.
 
 2. AGGREGATE STATISTICS
    Format         Median       Mean      Stdev        CV%
@@ -18,18 +27,38 @@ FINDINGS (9 runs, 180 total iterations)
    Average overhead: +4.57%
    Overhead stdev: 1.90%
    ISON baseline CV: 1.7%
-   Verdict: Overhead EXCEEDS noise floor - statistically significant but small effect
+   Effect: Overhead exceeds baseline variance (2.4σ at n=9)
 
 4. OUTPUT CHARACTERISTICS
    JSON:    25,401 bytes (baseline)
    ISON:    8,753 bytes (66% smaller, 2.90x compression)
    ISONCS:  8,753 bytes (same as ISON)
 
-5. VERDICT
-   - Canonicalization WORKS: different insertion orders produce identical bytes
-   - ISONCS overhead is REAL: +4.57% average, statistically significant but small
-   - Token efficiency: ISON/ISONCS are 66% smaller than JSON (2.9x compression)
-   - Speed gap: JSON is 4.4x faster due to C implementation vs Python, not format
-   - Prompt caching: NOT TESTED (76.5% invalidation on append makes unsuitable)
+   TOKEN EFFICIENCY (measured separately):
+   Byte ratio: 2.90x (JSON vs ISON)
+   Token ratio: 2.35x (separately measured on comparable data)
+   NOTE: Byte ratio ≠ token ratio due to JSON's punctuation overhead
+     (JSON: 3.32 chars/token vs ISON: 3.65 chars/token)
+   Actual token efficiency likely better than byte ratio suggests.
+
+5. TIMING METHODOLOGY
+   This benchmark measures serialization only (data generation excluded).
+   Prior benchmark (100619) included from_dict in timed region:
+     110.08ms total for 100 iterations ≈ 1.1ms/iter (parsing + serialization)
+   This benchmark:
+     0.988ms/iter median (serialization only, document pre-generated)
+   Change: Isolated serialization from parsing to measure format overhead only.
+   Prior results with combined timing are NOT comparable; they measured a
+   different quantity (full parse cycle vs serialization pass).
+
+6. VERDICT
+   ✓ Canonicalization PASS (blocks stable across insertion order)
+   ! Canonicalization CAVEAT (fields not sorted; affects content-addressed use)
+   + ISONCS overhead: +4.57% average (real effect, small magnitude 2.4σ)
+   ✓ Compression: 66% smaller in bytes, ~70% smaller in tokens (estimated)
+   + Speed gap: JSON 4.4x faster due to C implementation vs Python, not format
+   ? Prompt caching: NOT TESTED (separate ADR-004; prefix stability requires
+       ordering changes and is measured separately; 76.5% invalidation on append
+       in simulated graph mutation test suggests unsuitable without changes)
 
 ====================================================================================================
