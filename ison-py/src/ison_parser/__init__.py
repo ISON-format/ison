@@ -638,6 +638,87 @@ class Serializer:
         return '\n\n'.join(blocks_output)
 
     @classmethod
+    def dumps_canonical(cls, doc: Document) -> str:
+        """
+        Serialize a Document to canonical ISON string.
+
+        Canonical form sorts blocks and rows ordinal-string on their keys,
+        uses single-space delimiter and no alignment, producing byte-identical
+        output across implementations for the same logical data.
+
+        The key for each row is the first column's value (conventionally 'id').
+        Rows with null in the key column sort after rows with values.
+        """
+        blocks_output = []
+
+        # Sort blocks ordinal-string by key (kind.name)
+        sorted_blocks = sorted(doc.blocks, key=lambda b: f"{b.kind}.{b.name}")
+
+        for block in sorted_blocks:
+            block_str = cls._serialize_block_canonical(block)
+            blocks_output.append(block_str)
+
+        return '\n\n'.join(blocks_output)
+
+    @classmethod
+    def _serialize_block_canonical(cls, block: Block) -> str:
+        """Serialize a single block in canonical form (sorted rows, no alignment)"""
+        lines = []
+
+        # Header
+        lines.append(f"{block.kind}.{block.name}")
+
+        # Fields (with type annotations if present)
+        if block.field_info:
+            field_strs = []
+            for fi in block.field_info:
+                if fi.type:
+                    field_strs.append(f"{fi.name}:{fi.type}")
+                else:
+                    field_strs.append(fi.name)
+            lines.append(' '.join(field_strs))
+        else:
+            lines.append(' '.join(block.fields))
+
+        # Sort rows ordinal-string by first column value (key)
+        sorted_rows = cls._sort_rows_by_key(block)
+
+        # Data rows (no alignment, single-space delimiter)
+        for row in sorted_rows:
+            values = []
+            for field in block.fields:
+                value = cls._get_nested_value(row, field)
+                str_value = cls._value_to_ison(value)
+                values.append(str_value)
+
+            lines.append(' '.join(values).rstrip())
+
+        # Summary row (if present) — goes to canonical form as-is
+        if block.summary:
+            lines.append('---')
+            lines.append(block.summary)
+
+        return '\n'.join(lines)
+
+    @classmethod
+    def _sort_rows_by_key(cls, block: Block) -> list[dict]:
+        """Sort rows ordinal-string by first column value (key)."""
+        if not block.rows or not block.fields:
+            return block.rows
+
+        key_field = block.fields[0]
+
+        def row_sort_key(row):
+            key_value = cls._get_nested_value(row, key_field)
+            # Rows with null key sort to the end
+            if key_value is None:
+                return (1, '')  # (sort_group, value)
+            # Convert key to string for ordinal comparison
+            return (0, str(key_value))
+
+        return sorted(block.rows, key=row_sort_key)
+
+    @classmethod
     def _serialize_block(cls, block: Block, align_columns: bool, delimiter: str = ' ') -> str:
         """Serialize a single block"""
         lines = []
@@ -851,6 +932,25 @@ def dumps(doc: Document, align_columns: bool = False, delimiter: str = ' ') -> s
         ISON formatted string
     """
     return Serializer.dumps(doc, align_columns, delimiter)
+
+
+def dumps_canonical(doc: Document) -> str:
+    """
+    Serialize a Document to canonical ISON string.
+
+    Canonical form produces byte-identical output across all implementations
+    for the same logical data. Blocks are sorted ordinal-string by key
+    (kind.name), rows within each block are sorted ordinal-string by the
+    first column value (conventionally 'id'), using single-space delimiter
+    and no alignment.
+
+    Args:
+        doc: Document to serialize
+
+    Returns:
+        Canonical ISON formatted string (deterministic, sorted)
+    """
+    return Serializer.dumps_canonical(doc)
 
 
 def dump(doc: Document, path: str | Path, align_columns: bool = False, delimiter: str = ' '):
@@ -1381,6 +1481,56 @@ class ISONLSerializer:
         return '\n'.join(lines)
 
     @classmethod
+    def dumps_canonical(cls, doc: Document) -> str:
+        """
+        Serialize a Document to canonical ISONL string.
+
+        Blocks are sorted ordinal-string by key (kind.name), rows within
+        each block are sorted ordinal-string by first column value, producing
+        byte-identical output across implementations for the same logical data.
+
+        Args:
+            doc: Document to serialize
+
+        Returns:
+            Canonical ISONL formatted string (deterministic, sorted)
+        """
+        lines = []
+
+        # Sort blocks ordinal-string by key (kind.name)
+        sorted_blocks = sorted(doc.blocks, key=lambda b: f"{b.kind}.{b.name}")
+
+        for block in sorted_blocks:
+            cls._validate_envelope(block)
+            header = f"{block.kind}.{block.name}"
+            fields_str = ' '.join(block.fields)
+
+            # Sort rows by first column value (key)
+            if block.fields:
+                key_field = block.fields[0]
+                sorted_rows = sorted(
+                    block.rows,
+                    key=lambda row: (
+                        (1, '') if row.get(key_field) is None
+                        else (0, str(row.get(key_field)))
+                    )
+                )
+            else:
+                sorted_rows = block.rows
+
+            for row in sorted_rows:
+                values = []
+                for field in block.fields:
+                    value = row.get(field)
+                    values.append(cls._value_to_isonl(value))
+
+                values_str = ' '.join(values)
+                line = f"{header}|{fields_str}|{values_str}"
+                lines.append(line)
+
+        return '\n'.join(lines)
+
+    @classmethod
     def _value_to_isonl(cls, value: Any) -> str:
         """Convert a value to ISONL string representation"""
         if value is None:
@@ -1506,6 +1656,24 @@ def dumps_isonl(doc: Document) -> str:
         ISONL formatted string
     """
     return ISONLSerializer.dumps(doc)
+
+
+def dumps_canonical_isonl(doc: Document) -> str:
+    """
+    Serialize a Document to canonical ISONL string.
+
+    Canonical form produces byte-identical output across all implementations
+    for the same logical data. Blocks are sorted ordinal-string by key
+    (kind.name), rows within each block are sorted ordinal-string by the
+    first column value (conventionally 'id').
+
+    Args:
+        doc: Document to serialize
+
+    Returns:
+        Canonical ISONL formatted string (deterministic, sorted)
+    """
+    return ISONLSerializer.dumps_canonical(doc)
 
 
 def dump_isonl(doc: Document, path: str | Path):
