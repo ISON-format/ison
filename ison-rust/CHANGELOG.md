@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.3] - 2026-08-01
+
+### Added
+- **Canonical Serialization (ISONCS)**: New `dumps_canonical(doc)` and `dumps_canonical_isonl(doc)` functions produce byte-identical output across implementations by sorting blocks and rows ordinal-string and emitting with fixed settings (single-space delimiter, no alignment). Supports content addressing, prefix stability (ISONGraph), and LLM prompt caching.
+- **Regression Tests**: Comprehensive test suite for canonical serialization with golden fixture verification.
+
 ## [1.0.2] - 2026-07-13
 
 ### Fixed
