@@ -1,0 +1,154 @@
+name: Publish NuGet Package
+
+# Publishes ison-cs to NuGet as Ison.Parser.
+#
+# Uses NuGet trusted publishing (OIDC) — no API key is stored as a secret. The
+# NuGet/login action exchanges this workflow's GitHub OIDC token for a
+# short-lived API key, which requires a trusted publishing policy on nuget.org
+# naming exactly:
+#
+#   Repository Owner : ISON-format
+#   Repository       : ison
+#   Workflow File    : publish-nuget.yml     <- this file's name
+#   Environment      : (blank, unless `environment:` is set on the job below)
+#
+# Renaming this file breaks the policy's workflow_ref claim; update both.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (build and pack, but do not publish)'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  publish:
+    name: Publish Ison.Parser to NuGet
+    runs-on: ubuntu-latest
+
+    permissions:
+      # Required for trusted publishing: lets the job request an OIDC token.
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '6.0.x'
+
+      # ---------------------------------------------------------------
+      # Preflight: same rules as release-all.yml
+      #   metadata != CHANGELOG head -> error (version was not bumped)
+      #   metadata already published -> error (NuGet rejects duplicates)
+      # ---------------------------------------------------------------
+      - name: Preflight version check
+        id: preflight
+        working-directory: ison-cs
+        run: |
+          set -uo pipefail
+
+          VERSION="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' src/IsonParser.csproj | head -1)"
+          HEAD="$(grep -m1 '^## \[' CHANGELOG.md | sed -E 's/^## \[([^]]+)\].*/\1/')"
+
+          if [ -z "$VERSION" ]; then
+            echo "::error::No <Version> found in ison-cs/src/IsonParser.csproj"
+            exit 1
+          fi
+
+          if [ "$VERSION" != "$HEAD" ]; then
+            echo "::error::csproj version ($VERSION) != CHANGELOG head ($HEAD). Bump the csproj before releasing."
+            exit 1
+          fi
+
+          # NuGet flat-container ids are lowercased.
+          PUBLISHED=no
+          if curl -sS "https://api.nuget.org/v3-flatcontainer/ison.parser/index.json" \
+               | grep -q "\"$VERSION\""; then
+            PUBLISHED=yes
+          fi
+
+          if [ "$PUBLISHED" = "yes" ]; then
+            echo "::error::Ison.Parser $VERSION is already published. NuGet does not allow overwriting a version."
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## NuGet preflight"
+            echo ""
+            echo "| Package | Version | CHANGELOG | Already published |"
+            echo "|---|---|---|---|"
+            echo "| Ison.Parser | $VERSION | $HEAD | $PUBLISHED |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore
+        working-directory: ison-cs
+        run: dotnet restore
+
+      - name: Build
+        working-directory: ison-cs
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Test
+        working-directory: ison-cs
+        run: dotnet test --no-build --configuration Release --verbosity normal
+
+      - name: Pack
+        working-directory: ison-cs
+        run: dotnet pack src/IsonParser.csproj --no-build --configuration Release -o ../artifacts
+
+      - name: Show package contents
+        run: |
+          ls -la artifacts/
+          for pkg in artifacts/*.nupkg; do
+            echo "--- $pkg ---"
+            unzip -l "$pkg"
+          done
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ison.Parser.${{ steps.preflight.outputs.version }}.nupkg
+          path: artifacts/*.nupkg
+
+      # ---------------------------------------------------------------
+      # Trusted publishing: exchange the OIDC token for a temporary API
+      # key. Nothing is stored in repository secrets.
+      # ---------------------------------------------------------------
+      - name: NuGet login (trusted publishing)
+        if: ${{ inputs.dry_run != true }}
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: maheshvaikri
+
+      - name: Publish to NuGet
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          dotnet nuget push artifacts/*.nupkg \
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo ""
+            echo "**Version:** ${{ steps.preflight.outputs.version }}"
+            echo "**Dry run:** ${{ inputs.dry_run }}"
+            echo ""
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "Dry run — package was built and packed but not published."
+              echo "The .nupkg is attached as a workflow artifact."
+            else
+              echo "Published to https://www.nuget.org/packages/Ison.Parser"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
