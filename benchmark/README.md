@@ -21,7 +21,7 @@ ISONCS (canonical ISON) overhead is **+4.57%** above regular ISON, statistically
 - ISONCS: 1.036ms (+4.57% overhead)
 - Overhead exceeds coefficient of variation (2.4σ, significant but small effect)
 
-All six implementations (Python, Rust, JavaScript, TypeScript, C#, Go, C++) produce **byte-identical canonical output**.
+All seven implementations (Python, Rust, JavaScript, TypeScript, C#, Go, C++) produce **byte-identical canonical output**.
 
 ---
 

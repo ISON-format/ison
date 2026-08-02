@@ -52,7 +52,7 @@ cd ison-vscode
 npm install
 npm run compile
 npm run package
-code --install-extension ison-lang-1.0.0.vsix
+code --install-extension ison-lang-1.0.2.vsix
 ```
 
 ### From Marketplace

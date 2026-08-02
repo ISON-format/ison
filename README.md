@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ISON-format/ison/releases"><img src="https://img.shields.io/badge/version-1.0.2-blue.svg" alt="Version 1.0.2"></a>
+  <a href="https://github.com/ISON-format/ison/releases"><img src="https://img.shields.io/badge/version-1.0.4-blue.svg" alt="Version 1.0.4"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://www.npmjs.com/package/ison-parser"><img src="https://img.shields.io/npm/v/ison-parser.svg" alt="NPM"></a>
   <a href="https://pypi.org/project/ison-py"><img src="https://img.shields.io/pypi/v/ison-py.svg" alt="PyPI"></a>
@@ -313,7 +313,9 @@ console.log(dumps_canonical(doc));
 - Single-space delimiter, no alignment, no comments
 - Idempotent: `dumps_canonical(parse(dumps_canonical(doc))) == dumps_canonical(doc)`
 
-**All six implementations produce byte-identical output** (verified on golden fixture):
+**All seven implementations produce byte-identical output**, enforced on every build by the
+[cross-language parity corpus](./benchmark/parity/) — 16 cases x 4 renderings, generated from
+the ison-py reference:
 - Python (ison-py): UTF-8 byte comparison
 - Rust (ison-rs): `as_bytes()` comparison
 - JavaScript (ison-parser): TextEncoder byte arrays
@@ -443,9 +445,9 @@ cd ison-go && go test -v ./...
 ## Test Results
 
 <details>
-<summary><strong>Click to expand test results (395+ tests passing)</strong></summary>
+<summary><strong>Click to expand test results (860+ tests passing across seven implementations)</strong></summary>
 
-### JavaScript (ison-parser) - 80 tests
+### JavaScript (ison-parser) - 194 tests
 ```
 ✓ parses basic table correctly
 ✓ handles quoted strings
@@ -462,7 +464,7 @@ cd ison-go && go test -v ./...
 ... and more
 ```
 
-### TypeScript (ison-ts) - 23 tests
+### TypeScript (ison-ts) - 156 tests
 ```
 ✓ should parse basic table
 ✓ should handle quoted strings
@@ -474,7 +476,7 @@ cd ison-go && go test -v ./...
 ✓ should parse ISONL format
 ```
 
-### Python (ison-py) - 212+ tests
+### Python (ison-py) - 233 tests
 ```
 ✓ test_parse_basic_table
 ✓ test_parse_quoted_strings
@@ -489,7 +491,7 @@ cd ison-go && go test -v ./...
 ... and 200+ more tests
 ```
 
-### Rust (ison-rs) - 9 tests
+### Rust (ison-rs) - 31 tests
 ```
 ✓ test_dumps_with_delimiter
 ✓ test_isonl
@@ -503,7 +505,7 @@ cd ison-go && go test -v ./...
 ✓ doc-tests
 ```
 
-### C++ (ison-cpp) - 30 tests
+### C++ (ison-cpp) - 2 suites (incl. 80 parity checks)
 ```
 ✓ parse_simple_table
 ✓ parse_object_block
@@ -516,7 +518,7 @@ cd ison-go && go test -v ./...
 ... and 15 more tests
 ```
 
-### Go (ison-go) - 40+ tests
+### Go (ison-go) - 93 tests
 ```
 ✓ TestParseSimpleTable
 ✓ TestParseTypedFields
@@ -530,6 +532,17 @@ cd ison-go && go test -v ./...
 ✓ TestToJSON / TestFromJSON
 # Built-in validation available in validation subpackage
 ... and more tests
+```
+
+### C# (Ison.Parser) - 156 tests
+```
+✓ TestParser        — headers, type annotations, references, escapes,
+                      dot-path fields, summary rows, inline comments
+✓ TestSerializer    — round-trip quoting, alignment, number formatting
+✓ TestIsonl         — parse, serialize, streaming, envelope validation
+✓ TestCanonical     — id hoisting, UTF-8 byte order, ordinal sorting
+✓ TestCrossLanguageParity — byte-identity vs the ison-py reference
+                      across all four renderings, 16 corpus cases
 ```
 
 </details>

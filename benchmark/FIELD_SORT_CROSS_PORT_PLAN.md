@@ -22,7 +22,7 @@ This is simpler to port than a computed tuple key, and it's correct: id hoists u
 
 ## Shared Golden Fixture (Not Six Independent Tests)
 
-One input file (JSON), one expected-output file (ISON canonical), byte-compared across all six implementations.
+One input file (JSON), one expected-output file (ISON canonical), byte-compared across all seven implementations.
 
 **Location**: `benchmark/golden_fixture_field_sort.json` (input) and `golden_fixture_field_sort.expected_canonical.ison` (output)
 

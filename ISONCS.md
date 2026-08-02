@@ -181,7 +181,7 @@ Appending new nodes uses tier `9_*` (volatile), existing nodes use tier `0_*` (i
 
 ## Across Implementations
 
-All six implementations (Python, JavaScript, TypeScript, Go, Rust, C++) produce byte-identical canonical output for the same logical Document. Verified by:
+All seven implementations (Python, JavaScript, TypeScript, C#, Go, Rust, C++) produce byte-identical canonical output for the same logical Document. Verified by:
 
 - Shared golden fixture test in each language
 - Each implementation parses, serializes canonically, compares to reference bytes

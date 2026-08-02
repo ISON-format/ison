@@ -191,4 +191,4 @@ MIT — Copyright (c) 2025 Mahesh Vaikri
 
 ## Version
 
-Compatible with ISON v1.0.3+
+Compatible with ISON v1.0.4+

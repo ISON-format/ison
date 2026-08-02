@@ -82,7 +82,7 @@ If you're tempted to "clean up" the fixture:
 2. **Keep the scrambled order in `scrambled`** — the point is to test sorting, not a pre-sorted table.
 3. **Keep the mismatched field orders in `users_order_1/2`** — that's what makes signature independence testable.
 
-If a test case seems unnecessary, it probably caught a bug in production. Run the fixture through all six implementations before deleting anything.
+If a test case seems unnecessary, it probably caught a bug in production. Run the fixture through all seven implementations before deleting anything.
 
 ## How to Use
 
@@ -92,6 +92,6 @@ For each implementation (Rust, JS/TS, C++, C#, Go):
 2. Parse and canonicalize (using the implementation's `dumps_canonical`)
 3. Compare output byte-for-byte with `golden_fixture_field_sort.expected.ison`
 4. If bytes differ, the implementation is wrong
-5. If all six implementations produce identical bytes, field sorting is correct
+5. If all seven implementations produce identical bytes, field sorting is correct
 
 The fixture is language-agnostic (JSON input) and deterministic (one expected output).
