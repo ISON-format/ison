@@ -1,10 +1,21 @@
 # Changelog
 
+## [1.0.5] - 2026-08-01
+
+### Added
+- **Field Sorting in ISONCS**: `dumps_canonical()` now sorts fields within each row for deterministic output across implementations with unordered hash tables (Rust HashMap, Go map, C# Dictionary). Algorithm: `id` field first (if present), then remaining fields alphabetically by UTF-8 byte order. This ensures byte-identical canonical output regardless of iteration order semantics.
+- **UTF-8 Byte Comparison**: Field sorting explicitly uses UTF-8 byte comparison (ordinal), not Unicode code points, to avoid divergence in UTF-16 languages (JavaScript, TypeScript, C#). All implementations verified to produce byte-identical output on golden fixture including UTF-16 divergence test case (Ａfield vs 😀field).
+
+### Changed
+- **ISONCS Specification Updated**: ISONCS.md now documents field ordering rules, reserved field names (`id`), UTF-8 byte vs Unicode code point divergence, and cross-implementation verification approach.
+- **Regression Tests Expanded**: Added field-order independence tests, table signature order-independence tests, and UTF-16 divergence sentinel tests. All six implementations (Python, Rust, JavaScript, TypeScript, C#, Go, C++) verified on shared golden fixture.
+
 ## [1.0.4] - 2026-08-01
 
 ### Added
 - **Canonical Serialization (ISONCS)**: New `dumps_canonical(doc)` and `dumps_canonical_isonl(doc)` functions produce byte-identical output across implementations by sorting blocks and rows ordinal-string and emitting with fixed settings (single-space delimiter, no alignment). Supports content addressing, prefix stability (ISONGraph), and LLM prompt caching.
-- **Regression Tests**: 11 test cases covering block/row sorting, null handling, idempotency, references, and field annotations. Golden fixture for cross-language verification.
+- **Field Sorting in ISONCS**: `dumps_canonical()` now sorts fields within each row for deterministic output across implementations with unordered hash tables (Rust HashMap, Go map, C# Dictionary). Algorithm: `id` field first (if present), then remaining fields alphabetically by UTF-8 byte order. This ensures byte-identical canonical output regardless of iteration order semantics.
+- **Regression Tests**: Expanded test suite with 4 field-order independence tests, table signature order-independence tests, and UTF-16 divergence sentinel tests. Golden fixture for cross-language verification across all six implementations (Python, Rust, JavaScript, TypeScript, C#, Go, C++).
 
 ## [1.0.3] - 2026-07-13
 

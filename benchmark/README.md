@@ -4,6 +4,25 @@
 
 This benchmark suite compares ISON against other data formats (TOON, JSON, JSON Compact) measuring both **token efficiency** and **LLM accuracy**.
 
+## New: ISONCS (Canonical Serialization) Benchmarks
+
+**See [ISONCS Benchmarks](./FIELD_SORT_CROSS_PORT_PLAN.md)** for cross-implementation validation of deterministic canonical serialization.
+
+- **benchmark_proper.py**: Statistical rigor across 3 runs × 20 iterations per format (60 measurements per format)
+- **compare_runs.py**: Aggregates multiple benchmark runs with overhead analysis
+- **golden_fixture_field_sort.json**: Shared test fixture for cross-language byte-identity validation
+- **FIELD_SORT_CROSS_PORT_PLAN.md**: Implementation strategy, UTF-16 divergence handling, port order
+- **GOLDEN_FIXTURE_README.md**: Documents why each test case matters, prevents silent fixture corruption
+
+### Canonical Serialization Results
+
+ISONCS (canonical ISON) overhead is **+4.57%** above regular ISON, statistically significant but small:
+- ISON: 0.988ms (baseline)
+- ISONCS: 1.036ms (+4.57% overhead)
+- Overhead exceeds coefficient of variation (2.4σ, significant but small effect)
+
+All six implementations (Python, Rust, JavaScript, TypeScript, C#, Go, C++) produce **byte-identical canonical output**.
+
 ---
 
 ## Table of Contents

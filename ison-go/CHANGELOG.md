@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.3] - 2026-08-01
+
+### Added
+- **Field Sorting in ISONCS**: `DumpsCanonical()` now sorts fields for deterministic output across implementations. Algorithm: `id` field first, then alphabetically by UTF-8 bytes.
+- **UTF-8 Byte Comparison**: Uses Go's native `bytes.Compare()` for consistent UTF-8 byte ordering, ensuring field ordering matches Python, Rust, JavaScript, TypeScript, C#, and C++ implementations.
+
+### Changed
+- **ISONCS Specification Updated**: Field ordering rules now explicit with UTF-8 vs Unicode divergence tests (e.g., Ａfield vs 😀field).
+- **Tests Expanded**: Golden fixture validation confirms byte-for-byte match across all implementations (Python, Rust, JavaScript, TypeScript, C#, Go, C++).
+
+### Testing
+- All 54 tests passing
+- Golden fixture: byte-for-byte match with reference implementation
+- Cross-language: verified against Python (v1.0.4) and other implementations
+- UTF-8 ordering confirmed with non-BMP character tests
+
 ## [1.0.2] - 2026-08-01
 
 ### Added

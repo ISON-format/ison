@@ -22,17 +22,79 @@ A deterministic serialization contract for ISON documents, producing byte-identi
    - If a row has no value in the key column (null), it sorts after all rows with values
    - Rows are emitted in this order regardless of insertion order
 
-3. **Emit with canonical settings:**
+3. **Sort fields within each row ordinal-string on their column name:**
+   - The `"id"` field (if present) is hoisted to the first column position
+   - Remaining fields are sorted alphabetically by UTF-8 byte order (not Unicode code point order)
+   - Fields are emitted in this order regardless of input order or implementation's iteration semantics
+   - This ensures byte-identical output across implementations with different hash table iteration (Rust HashMap, Python dict, Go map, C# Dictionary, etc.)
+   - Example: Input fields `{score, active, id, email, name}` → canonical order `{id, active, email, name, score}`
+
+4. **Emit with canonical settings:**
    - Single-space delimiter (no custom delimiters, no alignment)
    - No comments or extra whitespace
    - UTF-8 encoding
    - Quoting rules identical to `dumps()` (space, pipe, quote, backslash, newline, leading `#`, header-shaped values, empty strings)
    - ISONL variant: `dumps_canonical_isonl()` applies identical canonical rules to ISONL format
 
-4. **Idempotent over input order:**
+5. **Idempotent over input order:**
    - Parsing canonical ISON and re-serializing canonically produces identical bytes
    - Field order in parsed documents does not affect output
+   - Block insertion order, row insertion order, and field insertion order are all normalized
    - `dumps_canonical(parse(dumps_canonical(doc))) == dumps_canonical(doc)`
+
+## Field Ordering
+
+Field sorting is essential for byte-identical output across implementations, because hash table iteration order is unspecified:
+
+- **Rust HashMap**: Unordered iteration (non-deterministic)
+- **Go map**: Unordered iteration (randomized per run)
+- **C# Dictionary**: Implementation-dependent order
+- **Python dict** (3.7+): Insertion order (predictable, but implementation detail)
+- **JavaScript object**: Insertion order for string keys (ES2015+), but implementation detail
+
+Without field sorting, the same logical data produces different field orders in different implementations, breaking byte-identity.
+
+### Field Sorting Algorithm
+
+1. **Hoist the `"id"` field first** (if present)
+   - `"id"` is conventionally the reference anchor (`:type:id` references use this column)
+   - Hoisting it to first position preserves readability in canonical output
+   - Rationale: readable output is a secondary benefit; determinism is primary
+
+2. **Sort remaining fields alphabetically by UTF-8 byte order**
+   - UTF-8 byte order (ordinal comparison on UTF-8 code points, not Unicode code points)
+   - Example: `[name, email, score, active]` → `[active, email, name, score]`
+   - NOT code-point order, NOT locale-aware order
+
+### UTF-8 Byte vs Unicode Code Point Order
+
+This matters for characters outside the Basic Multilingual Plane (above U+FFFF):
+
+| Field Names | UTF-8 Bytes | UTF-16 Code Units | Correct Order (UTF-8) |
+|---|---|---|---|
+| `Ａfield`, `😀field` | 0xEF, 0xF0 | 0xFF, 0xD8 (surrogate) | Ａ < 😀 |
+
+**UTF-16 languages (JavaScript, TypeScript, C#) must use explicit UTF-8 byte comparison**, not native string comparison:
+- JavaScript: `TextEncoder` + byte array comparison (not `<`)
+- TypeScript: same as JavaScript
+- C#: `System.Text.Encoding.UTF8.GetBytes()` + byte array comparison (not `CompareOrdinal`)
+
+**Why this matters:** 
+- A port using native string `<` passes most tests
+- Only characters above U+FFFF reveal the divergence (rare, but production failure when it happens)
+- The golden fixture includes `Ａfield` vs `😀field` to catch this
+
+### Reserved Field Names
+
+The field name `"id"` is reserved in canonical serialization. If your data has an unrelated column named `"id"` that is not a reference key, canonical output will still hoist it first. Use a different name (e.g., `"_id"`, `"oid"`) if this behavior is unwanted.
+
+### Cross-Implementation Verification
+
+All implementations (Python, JavaScript, TypeScript, Go, Rust, C#, C++) are verified to produce byte-identical field orders by:
+
+1. **Golden fixture test**: Shared JSON input, expected canonical ISON output
+2. **UTF-16 divergence test**: Fields named `Ａfield` and `😀field` to catch byte-order bugs
+3. **Table signature independence test**: Same columns in different order produce one table, not two
 
 ## Implementation Notes
 
@@ -40,6 +102,7 @@ A deterministic serialization contract for ISON documents, producing byte-identi
 - **Key construction is the caller's responsibility**: ISONCS does not interpret or construct keys. If you want tier prefixes, zero-padding, or relationship weighting, construct them in the key before calling `dumps_canonical()`.
 - **No parsing variant**: canonical *output* is deterministic by construction; canonical *input* validation (rejecting non-canonical ISON) is optional per implementation and not in scope.
 - **Golden fixtures**: each language's test suite includes a shared fixture document serialized to canonical bytes, verified against reference (ison-py).
+- **Field sorting is orthogonal to ISON's data interchange role**: Regular `dumps()` preserves authored field order because ISON is an interchange format. `dumps_canonical()` sorts fields because determinism requires implementation-independence. This divergence is intentional and documented.
 
 ## Examples
 

@@ -274,6 +274,55 @@ table.users|id name email|2 Bob bob@example.com
 | **ISONL Streaming** | Line-based format for large datasets |
 | **JSON Export** | Convert ISON to JSON |
 | **Roundtrip** | Parse and serialize without data loss |
+| **ISONCS** | Deterministic canonical serialization for content addressing and caching |
+
+---
+
+## ISONCS — Canonical Serialization
+
+ISONCS (ISON Canonical Serialization) produces **byte-identical output** across all implementations when serializing logically identical data. Perfect for:
+
+- **Content addressing** (checksums, deduplication, distributed tracing)
+- **LLM prompt caching** (deterministic output + cache hit guarantees)
+- **Git diffs** (meaningful diffs when serialization is deterministic)
+- **Cross-language verification** (golden fixtures ensure implementations stay in sync)
+
+```javascript
+import { parse, dumps_canonical } from 'ison-parser';
+
+const doc = parse(`
+table.users
+id name
+2 Bob
+1 Alice
+`);
+
+// Canonical output has sorted fields and rows, byte-identical across all implementations
+console.log(dumps_canonical(doc));
+// Regardless of input order:
+// table.users
+// id name
+// 1 Alice
+// 2 Bob
+```
+
+**Key properties:**
+- Blocks sorted ordinal-string by `kind.name`
+- Rows sorted ordinal-string by first column value (key)
+- **Fields sorted alphabetically by UTF-8 bytes** (`id` field first if present) — ensures byte-identical output across implementations with unordered hash tables (Rust HashMap, Go map, C# Dictionary)
+- Single-space delimiter, no alignment, no comments
+- Idempotent: `dumps_canonical(parse(dumps_canonical(doc))) == dumps_canonical(doc)`
+
+**All six implementations produce byte-identical output** (verified on golden fixture):
+- Python (ison-py): UTF-8 byte comparison
+- Rust (ison-rs): `as_bytes()` comparison
+- JavaScript (ison-parser): TextEncoder byte arrays
+- TypeScript (ison-ts): TextEncoder byte arrays
+- C# (ison-cs): UTF8.GetBytes() comparison
+- Go (ison-go): bytes.Compare() native
+- C++ (ison-cpp): unsigned char cast for UTF-8
+
+See **[ISONCS Specification](./ISONCS.md)** for complete details.
 
 ---
 
