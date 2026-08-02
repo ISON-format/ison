@@ -1,7 +1,7 @@
 /**
  * @file isonantic.hpp
  * @brief ISONantic - Type-safe validation for ISON format in C++
- * @version 1.0.0
+ * @version 1.0.1
  *
  * Header-only library for ISON schema validation.
  *
@@ -33,7 +33,7 @@
 
 namespace isonantic {
 
-inline const char* VERSION = "1.0.0";
+inline const char* VERSION = "1.0.1";
 
 // =============================================================================
 // Forward Declarations
