@@ -12,7 +12,6 @@ on:
           - all
           - ison-js
           - ison-ts
-          - isonantic-ts
       dry_run:
         description: 'Dry run (no actual publish)'
         required: false
@@ -68,41 +67,6 @@ jobs:
       - name: Publish ison-ts
         if: ${{ inputs.packages == 'all' || inputs.packages == 'ison-ts' }}
         working-directory: ison-ts
-        run: |
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            npm publish --dry-run
-          else
-            npm publish --access public
-          fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-  # DEPRECATED: isonantic-ts is merged into ison-ts (use ison-ts/validation).
-  # Deliberately excluded from the 'all' path -- it only runs when explicitly
-  # selected, e.g. to ship a final deprecation-notice release.
-  publish-dependent:
-    name: Publish isonantic-ts (DEPRECATED)
-    runs-on: ubuntu-latest
-    needs: publish-base
-    if: ${{ always() && inputs.packages == 'isonantic-ts' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Build isonantic-ts
-        working-directory: isonantic-ts
-        run: |
-          npm ci
-          npm run build
-
-      - name: Publish isonantic-ts
-        working-directory: isonantic-ts
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             npm publish --dry-run
