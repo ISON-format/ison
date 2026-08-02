@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.3] - 2026-08-01
+## [1.0.2] - 2026-08-01
 
 ### Added
 - **Canonical Serialization (ISONCS)**: New `dumpsCanonical(doc)` and `dumpsCanonicalIsonl(doc)` functions produce byte-identical output across implementations by sorting blocks and rows ordinal-string and emitting with fixed settings (single-space delimiter, no alignment). Supports content addressing, prefix stability (ISONGraph), and LLM prompt caching.
@@ -16,8 +16,6 @@ These were found by a new shared parity corpus (`benchmark/parity/`) whose expec
 
 - **Literal String `"~"` Lost on Round Trip**: `~` parsed as null but the string `"~"` was never quoted on output, so it serialized bare and came back as null. Now quoted.
 
-
-## [1.0.2] - 2026-07-13
 
 ### Fixed
 - **Extra Values Now Error**: Rows with more values than fields now throw `ISONSyntaxError` (`Row has N values but only M fields (extra value: ...)`) in both the regular and ISONL parsers instead of silently truncating data. Missing trailing values still pad with `null`

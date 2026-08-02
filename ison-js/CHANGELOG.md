@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.3] - 2026-08-01
+## [1.0.2] - 2026-08-01
 
 ### Added
 - **Canonical Serialization (ISONCS)**: New `dumpsCanonical(doc)` and `dumpsCanonicalISONL(doc)` functions produce byte-identical output across implementations by sorting blocks and rows ordinal-string and emitting with fixed settings (single-space delimiter, no alignment). Supports content addressing, prefix stability (ISONGraph), and LLM prompt caching.
@@ -16,8 +16,6 @@ These were found by a new shared parity corpus (`benchmark/parity/`) whose expec
 
 - **`~` Null Spelling Only Half-Supported**: `README.md` documents `~ or null for null values`, but a bare `~` parsed as the *string* `"~"` — so the README's own example misparsed. Both spellings now parse as null, and the literal string `"~"` is quoted on output so it still round-trips. Emission stays `null`, since older published releases cannot read `~`.
 
-
-## [1.0.2] - 2026-07-13
 
 ### Fixed
 - **ISONL Round-Trip Corruption**: Values ending in a backslash (e.g. `C:\path\`) no longer desync quote tracking in the ISONL line splitter, which caused parse errors or silent corruption when a later `|` appeared on the same line

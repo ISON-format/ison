@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.0.1] - 2026-08-01
+## [1.0.0] - 2026-08-01
 
 ### Added
 - **ISON Parser**: `Ison.Loads(text)` / `Ison.Parse(text)` / `Ison.Load(path)` parse ISON documents into a `Document`. Full support for block headers, field type annotations, type inference (int, float, bool, null, string), references (`:id`, `:type:id`, `:RELATIONSHIP:id`), quoted strings with escape sequences, dot-path nested fields, `---` summary rows, and comments.
@@ -33,8 +33,6 @@ All notable changes to this project will be documented in this file.
 - Golden fixture: byte-for-byte match with reference implementation
 - UTF-16 divergence test: Confirmed UTF8.GetBytes produces correct byte ordering (Ａfield < 😀field)
 - Cross-language: verified against Python (v1.0.4) and other implementations
-
-## [1.0.0] - 2026-08-01
 
 ### Added
 

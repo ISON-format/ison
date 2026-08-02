@@ -2,7 +2,7 @@
 
 All notable changes to the ISON command-line tool will be documented in this file.
 
-## [1.0.1] - 2026-08-01
+## [1.0.0] - 2026-08-01
 
 ### Added
 - **ISONCS (Canonical Serialization) Support**: New `--canonical` flag for `ison-cli dump` command produces byte-identical canonical ISON output across all platforms. Supports content addressing and deterministic serialization workflows.
@@ -14,8 +14,6 @@ All notable changes to the ISON command-line tool will be documented in this fil
 
 ### Changed
 - **Updated to ison-py 1.0.4**: Includes ISONCS field sorting implementation with UTF-8 byte comparison.
-
-## [1.0.0] - 2025-12-25
 
 ### Added
 - **Initial CLI Tool**: Command-line interface for ISON format conversion and validation

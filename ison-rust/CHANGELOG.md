@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.3] - 2026-08-01
+## [1.0.2] - 2026-08-01
 
 ### Added
 - **Canonical Serialization (ISONCS)**: New `dumps_canonical(doc)` and `dumps_canonical_isonl(doc)` functions produce byte-identical output across implementations by sorting blocks and rows ordinal-string and emitting with fixed settings (single-space delimiter, no alignment). Supports content addressing, prefix stability (ISONGraph), and LLM prompt caching.
@@ -18,8 +18,6 @@ These were found by a new shared parity corpus (`benchmark/parity/`) whose expec
 
 - **Literal String `"~"` Lost on Round Trip**: `~` parsed as null but the string `"~"` was never quoted on output, so it serialized bare and came back as null. Now quoted.
 
-
-## [1.0.2] - 2026-07-13
 
 ### Fixed
 - **ISONL round-trip corruption**: values containing trailing backslashes, carriage returns, pipes, or embedded quotes no longer corrupt the line structure. Pipe-splitting is now quote- and escape-aware (an escaped backslash before a closing quote can no longer desync quote tracking), the ISONL serializer now quotes strings containing `\r` or `\\` and escapes `|` as `\|`, and quoted tokens keep their string type when parsed back (e.g. `"123"` stays a string).
