@@ -1,10 +1,28 @@
 name: Release All Packages
 
+# Each package carries its OWN version (see its CHANGELOG + metadata file).
+# `version` below is ONLY the umbrella GitHub release tag -- it is never written
+# into any package. Each package publishes the version already committed in its
+# metadata file.
+#
+# Preflight rules, per package:
+#   metadata != CHANGELOG head  -> ERROR (metadata was not bumped for the release)
+#   metadata already published  -> SKIP  (nothing new to ship; not an error)
+#   otherwise                   -> PUBLISH
+#
+# Deprecated packages are excluded entirely: isonantic (Python), isonantic-ts,
+# isonantic-go -- all merged into their parser packages. Publish a final
+# deprecation release manually via the per-ecosystem workflows if ever needed.
+#
+# Not covered here (released separately): ison-go / isonantic-go (git tags),
+# ison-cpp / isonantic-cpp (header-only, no registry), ison-cs (NuGet),
+# ison-cli (PyPI, never published), ison-vscode (VS Code Marketplace).
+
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g., 1.0.1)'
+        description: 'Umbrella release tag (e.g. 1.0.4) -- NOT the per-package version'
         required: true
         type: string
       dry_run:
@@ -15,41 +33,127 @@ on:
 
 jobs:
   # ===========================================
-  # PHASE 1: Validate and Test
+  # PHASE 1: Preflight, Validate and Test
   # ===========================================
-  validate:
-    name: Validate Release
+  preflight:
+    name: Preflight Version Check
     runs-on: ubuntu-latest
+    outputs:
+      ison_js: ${{ steps.check.outputs.ison_js }}
+      ison_ts: ${{ steps.check.outputs.ison_ts }}
+      ison_py: ${{ steps.check.outputs.ison_py }}
+      ison_rs: ${{ steps.check.outputs.ison_rs }}
+      isonantic_rs: ${{ steps.check.outputs.isonantic_rs }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate version format
+      - name: Validate umbrella tag format
         run: |
           if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
-            echo "Invalid version format: ${{ inputs.version }}"
-            echo "Expected format: X.Y.Z or X.Y.Z-prerelease"
+            echo "::error::Invalid version format: ${{ inputs.version }} (expected X.Y.Z or X.Y.Z-prerelease)"
             exit 1
           fi
-          echo "Version ${{ inputs.version }} is valid"
 
+      - name: Verify metadata matches CHANGELOG and determine what to publish
+        id: check
+        run: |
+          set -uo pipefail
+          FAIL=0
+
+          {
+            echo "## Preflight: per-package versions"
+            echo ""
+            echo "| Package | Registry name | Metadata | CHANGELOG | Published | Action |"
+            echo "|---|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          check() {
+            local key="$1" dir="$2" registry="$3" name="$4" meta="$5"
+            local head published action
+
+            if [ ! -f "$dir/CHANGELOG.md" ]; then
+              echo "::error::$dir has no CHANGELOG.md"
+              FAIL=1
+              return
+            fi
+            head="$(grep -m1 '^## \[' "$dir/CHANGELOG.md" | sed -E 's/^## \[([^]]+)\].*/\1/')"
+
+            published=no
+            case "$registry" in
+              npm)
+                npm view "$name@$meta" version >/dev/null 2>&1 && published=yes ;;
+              pypi)
+                [ "$(curl -sS -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/$name/$meta/json")" = "200" ] && published=yes ;;
+              crates)
+                curl -sS -H 'User-Agent: ison-release-ci' "https://crates.io/api/v1/crates/$name/$meta" \
+                  | grep -q "\"num\":\"$meta\"" && published=yes ;;
+            esac
+
+            if [ "$meta" != "$head" ]; then
+              action='**ERROR**'
+              echo "::error::$dir metadata version ($meta) != CHANGELOG head ($head). Bump $dir metadata to $head before releasing."
+              FAIL=1
+            elif [ "$published" = "yes" ]; then
+              action='skip (already published)'
+              echo "$key=skip" >> "$GITHUB_OUTPUT"
+            else
+              action='publish'
+              echo "$key=publish" >> "$GITHUB_OUTPUT"
+            fi
+
+            printf '| %s | %s | %s | %s | %s | %s |\n' \
+              "$dir" "$name" "$meta" "$head" "$published" "$action" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          npm_version()  { node -p "require('./$1/package.json').version"; }
+          toml_version() { grep -m1 '^version' "$1" | sed -E 's/.*"([^"]+)".*/\1/'; }
+
+          check ison_js      ison-js        npm    ison-parser  "$(npm_version ison-js)"
+          check ison_ts      ison-ts        npm    ison-ts      "$(npm_version ison-ts)"
+          check ison_py      ison-py        pypi   ison-py      "$(toml_version ison-py/pyproject.toml)"
+          check ison_rs      ison-rust      crates ison-rs      "$(toml_version ison-rust/Cargo.toml)"
+          check isonantic_rs isonantic-rust crates isonantic-rs "$(toml_version isonantic-rust/Cargo.toml)"
+
+          if [ "$FAIL" -ne 0 ]; then
+            {
+              echo ""
+              echo "Preflight failed. Every package's metadata version must equal its CHANGELOG head."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+  # NOTE: there is no root package.json -- this repo is not an npm workspace.
+  # Every npm step must run inside its own package directory.
   test-npm:
     name: Test NPM Packages
     runs-on: ubuntu-latest
-    needs: validate
+    needs: preflight
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm ci
-      - run: npm run build
-      - run: npm run test
+
+      - name: Test ison-js
+        working-directory: ison-js
+        run: |
+          npm ci
+          mkdir -p dist
+          npm run build
+          npm test
+
+      - name: Test ison-ts
+        working-directory: ison-ts
+        run: |
+          npm ci
+          npm run build
+          npm test
 
   test-python:
     name: Test Python Packages
     runs-on: ubuntu-latest
-    needs: validate
+    needs: preflight
     strategy:
       matrix:
         python-version: ['3.9', '3.11', '3.12']
@@ -62,44 +166,49 @@ jobs:
         working-directory: ison-py
         run: |
           pip install -e ".[dev]"
-          pytest tests/ -v || echo "No tests found or tests skipped"
-      - name: Test isonantic
-        working-directory: isonantic
-        run: |
-          pip install -e ".[dev]"
-          pytest tests/ -v || echo "No tests found or tests skipped"
+          pytest tests/ -v
 
+  # NOTE: there is no root Cargo.toml -- this repo is not a cargo workspace.
+  # Every cargo step must run inside its own crate directory.
   test-rust:
     name: Test Rust Packages
     runs-on: ubuntu-latest
-    needs: validate
+    needs: preflight
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --all-features
+
+      - name: Test ison-rust
+        working-directory: ison-rust
+        run: cargo test --all-features
+
+      - name: Test isonantic-rust
+        working-directory: isonantic-rust
+        run: cargo test --all-features
 
   # ===========================================
   # PHASE 2: Publish Base Packages
   # ===========================================
   publish-npm-base:
-    name: Publish NPM Base (ison-js, ison-ts)
+    name: Publish NPM (ison-parser, ison-ts)
     runs-on: ubuntu-latest
-    needs: [test-npm, test-python, test-rust]
+    needs: [preflight, test-npm, test-python, test-rust]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
-      - run: npm ci
-      - run: npm run build
 
       - name: Publish ison-js
+        if: ${{ needs.preflight.outputs.ison_js == 'publish' }}
         working-directory: ison-js
         run: |
+          npm ci
+          mkdir -p dist
+          npm run build
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "[DRY RUN] Would publish ison-js@${{ inputs.version }}"
             npm publish --dry-run
           else
             npm publish --access public
@@ -108,10 +217,12 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish ison-ts
+        if: ${{ needs.preflight.outputs.ison_ts == 'publish' }}
         working-directory: ison-ts
         run: |
+          npm ci
+          npm run build
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "[DRY RUN] Would publish ison-ts@${{ inputs.version }}"
             npm publish --dry-run
           else
             npm publish --access public
@@ -120,9 +231,10 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-python-base:
-    name: Publish PyPI Base (ison-py)
+    name: Publish PyPI (ison-py)
     runs-on: ubuntu-latest
-    needs: [test-npm, test-python, test-rust]
+    needs: [preflight, test-npm, test-python, test-rust]
+    if: ${{ needs.preflight.outputs.ison_py == 'publish' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -136,7 +248,6 @@ jobs:
           python -m build
           twine check dist/*
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "[DRY RUN] Would publish ison-py to PyPI"
             ls -la dist/
           else
             twine upload dist/*
@@ -146,19 +257,19 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
 
   publish-rust-base:
-    name: Publish Crates.io Base (ison-rust)
+    name: Publish Crates.io (ison-rs)
     runs-on: ubuntu-latest
-    needs: [test-npm, test-python, test-rust]
+    needs: [preflight, test-npm, test-python, test-rust]
+    if: ${{ needs.preflight.outputs.ison_rs == 'publish' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Publish ison-rust
+      - name: Publish ison-rs
         working-directory: ison-rust
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "[DRY RUN] Would publish ison-rust to crates.io"
             cargo publish --dry-run
           else
             cargo publish
@@ -169,83 +280,24 @@ jobs:
   # ===========================================
   # PHASE 3: Publish Dependent Packages
   # ===========================================
-  publish-npm-dependent:
-    name: Publish NPM Dependent (isonantic-ts)
-    runs-on: ubuntu-latest
-    needs: publish-npm-base
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-      - run: npm ci
-      - run: npm run build
-
-      - name: Wait for npm propagation
-        if: ${{ inputs.dry_run != true }}
-        run: sleep 30
-
-      - name: Publish isonantic-ts
-        working-directory: isonantic-ts
-        run: |
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "[DRY RUN] Would publish isonantic-ts@${{ inputs.version }}"
-            npm publish --dry-run
-          else
-            npm publish --access public
-          fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-  publish-python-dependent:
-    name: Publish PyPI Dependent (isonantic)
-    runs-on: ubuntu-latest
-    needs: publish-python-base
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - run: pip install build twine
-
-      - name: Wait for PyPI propagation
-        if: ${{ inputs.dry_run != true }}
-        run: sleep 60
-
-      - name: Build and publish isonantic
-        working-directory: isonantic
-        run: |
-          python -m build
-          twine check dist/*
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "[DRY RUN] Would publish isonantic to PyPI"
-            ls -la dist/
-          else
-            twine upload dist/*
-          fi
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-
   publish-rust-dependent:
-    name: Publish Crates.io Dependent (isonantic-rust)
+    name: Publish Crates.io Dependent (isonantic-rs)
     runs-on: ubuntu-latest
-    needs: publish-rust-base
+    needs: [preflight, publish-rust-base]
+    if: ${{ always() && !failure() && !cancelled() && needs.preflight.outputs.isonantic_rs == 'publish' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
       - name: Wait for crates.io propagation
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ inputs.dry_run != true && needs.preflight.outputs.ison_rs == 'publish' }}
         run: sleep 60
 
-      - name: Publish isonantic-rust
+      - name: Publish isonantic-rs
         working-directory: isonantic-rust
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "[DRY RUN] Would publish isonantic-rust to crates.io"
             cargo publish --dry-run
           else
             cargo publish
@@ -259,48 +311,60 @@ jobs:
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [publish-npm-dependent, publish-python-dependent, publish-rust-dependent]
-    if: ${{ inputs.dry_run != true }}
+    needs: [publish-npm-base, publish-python-base, publish-rust-base, publish-rust-dependent]
+    if: ${{ always() && !failure() && !cancelled() && inputs.dry_run != true }}
     steps:
       - uses: actions/checkout@v4
 
+      - name: Collect published versions
+        id: versions
+        run: |
+          {
+            echo "ison_js=$(node -p "require('./ison-js/package.json').version")"
+            echo "ison_ts=$(node -p "require('./ison-ts/package.json').version")"
+            echo "ison_py=$(grep -m1 '^version' ison-py/pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+            echo "ison_rs=$(grep -m1 '^version' ison-rust/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+            echo "isonantic_rs=$(grep -m1 '^version' isonantic-rust/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ inputs.version }}
           name: Release v${{ inputs.version }}
           body: |
             ## ISON v${{ inputs.version }}
 
-            ### Published Packages
+            Each package is versioned independently. Current versions:
 
             **NPM (JavaScript/TypeScript)**
-            - `ison-parser@${{ inputs.version }}` - [npm](https://www.npmjs.com/package/ison-parser)
-            - `ison-ts@${{ inputs.version }}` - [npm](https://www.npmjs.com/package/ison-ts)
-            - `isonantic-ts@${{ inputs.version }}` - [npm](https://www.npmjs.com/package/isonantic-ts)
+            - `ison-parser@${{ steps.versions.outputs.ison_js }}` - [npm](https://www.npmjs.com/package/ison-parser)
+            - `ison-ts@${{ steps.versions.outputs.ison_ts }}` - [npm](https://www.npmjs.com/package/ison-ts)
 
             **PyPI (Python)**
-            - `ison-py==${{ inputs.version }}` - [PyPI](https://pypi.org/project/ison-py/)
-            - `isonantic==${{ inputs.version }}` - [PyPI](https://pypi.org/project/isonantic/)
+            - `ison-py==${{ steps.versions.outputs.ison_py }}` - [PyPI](https://pypi.org/project/ison-py/)
 
             **Crates.io (Rust)**
-            - `ison-rust@${{ inputs.version }}` - [crates.io](https://crates.io/crates/ison-rust)
-            - `isonantic@${{ inputs.version }}` - [crates.io](https://crates.io/crates/isonantic)
+            - `ison-rs@${{ steps.versions.outputs.ison_rs }}` - [crates.io](https://crates.io/crates/ison-rs)
+            - `isonantic-rs@${{ steps.versions.outputs.isonantic_rs }}` - [crates.io](https://crates.io/crates/isonantic-rs)
+
+            > **Deprecated:** `isonantic` (Python), `isonantic-ts`, and `isonantic-go` have been
+            > merged into `ison-py`, `ison-ts`, and `ison-go` respectively. Use
+            > `ison_parser.validation`, `ison-ts/validation`, and `ison-go/validation`.
 
             ### Installation
 
             ```bash
             # JavaScript/TypeScript
-            npm install ison-ts@${{ inputs.version }}
-            npm install isonantic-ts@${{ inputs.version }}
+            npm install ison-parser@${{ steps.versions.outputs.ison_js }}
+            npm install ison-ts@${{ steps.versions.outputs.ison_ts }}
 
             # Python
-            pip install ison-py==${{ inputs.version }}
-            pip install isonantic==${{ inputs.version }}
+            pip install ison-py==${{ steps.versions.outputs.ison_py }}
 
             # Rust
-            cargo add ison-rust@${{ inputs.version }}
-            cargo add isonantic@${{ inputs.version }}
+            cargo add ison-rs@${{ steps.versions.outputs.ison_rs }}
+            cargo add isonantic-rs@${{ steps.versions.outputs.isonantic_rs }}
             ```
           draft: false
           prerelease: ${{ contains(inputs.version, '-') }}
@@ -310,18 +374,28 @@ jobs:
   summary:
     name: Release Summary
     runs-on: ubuntu-latest
-    needs: [publish-npm-dependent, publish-python-dependent, publish-rust-dependent]
+    needs: [preflight, publish-npm-base, publish-python-base, publish-rust-base, publish-rust-dependent]
     if: always()
     steps:
       - name: Summary
         run: |
-          echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Dry Run:** ${{ inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "This was a dry run. No packages were actually published." >> $GITHUB_STEP_SUMMARY
-          else
-            echo "All packages have been published successfully!" >> $GITHUB_STEP_SUMMARY
-          fi
+          {
+            echo "## Release Summary"
+            echo ""
+            echo "**Umbrella tag:** v${{ inputs.version }}"
+            echo "**Dry run:** ${{ inputs.dry_run }}"
+            echo ""
+            echo "| Package | Preflight action |"
+            echo "|---|---|"
+            echo "| ison-parser | ${{ needs.preflight.outputs.ison_js }} |"
+            echo "| ison-ts | ${{ needs.preflight.outputs.ison_ts }} |"
+            echo "| ison-py | ${{ needs.preflight.outputs.ison_py }} |"
+            echo "| ison-rs | ${{ needs.preflight.outputs.ison_rs }} |"
+            echo "| isonantic-rs | ${{ needs.preflight.outputs.isonantic_rs }} |"
+            echo ""
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "Dry run -- no packages were published."
+            else
+              echo "Go / C++ / C# / VS Code packages are released separately."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -174,3 +174,24 @@ jobs:
           cmake .. -DISONANTIC_BUILD_TESTS=ON
           cmake --build .
           ctest --output-on-failure
+
+  # ===========================================
+  # C# Tests
+  # ===========================================
+  test-csharp:
+    name: Test C# (ison-cs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '6.0.x'
+
+      - name: Build and test ison-cs
+        working-directory: ison-cs
+        run: |
+          dotnet restore
+          dotnet build --no-restore --configuration Release
+          dotnet test --no-build --configuration Release --verbosity normal

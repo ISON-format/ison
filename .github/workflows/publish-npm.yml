@@ -16,7 +16,7 @@ on:
       dry_run:
         description: 'Dry run (no actual publish)'
         required: false
-        default: false
+        default: true
         type: boolean
 
 jobs:
@@ -34,14 +34,16 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build all packages
-        run: npm run build
-
-      - name: Test all packages
-        run: npm run test
+      # NOTE: there is no root package.json -- this repo is not an npm
+      # workspace, so every npm step runs inside its own package directory.
+      - name: Build and test ison-js
+        if: ${{ inputs.packages == 'all' || inputs.packages == 'ison-js' }}
+        working-directory: ison-js
+        run: |
+          npm ci
+          mkdir -p dist
+          npm run build
+          npm test
 
       - name: Publish ison-js
         if: ${{ inputs.packages == 'all' || inputs.packages == 'ison-js' }}
@@ -55,6 +57,14 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Build and test ison-ts
+        if: ${{ inputs.packages == 'all' || inputs.packages == 'ison-ts' }}
+        working-directory: ison-ts
+        run: |
+          npm ci
+          npm run build
+          npm test
+
       - name: Publish ison-ts
         if: ${{ inputs.packages == 'all' || inputs.packages == 'ison-ts' }}
         working-directory: ison-ts
@@ -67,11 +77,14 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+  # DEPRECATED: isonantic-ts is merged into ison-ts (use ison-ts/validation).
+  # Deliberately excluded from the 'all' path -- it only runs when explicitly
+  # selected, e.g. to ship a final deprecation-notice release.
   publish-dependent:
-    name: Publish Dependent Packages
+    name: Publish isonantic-ts (DEPRECATED)
     runs-on: ubuntu-latest
     needs: publish-base
-    if: ${{ always() && (inputs.packages == 'all' || inputs.packages == 'isonantic-ts') }}
+    if: ${{ always() && inputs.packages == 'isonantic-ts' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -82,15 +95,11 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build all packages
-        run: npm run build
-
-      - name: Wait for npm registry propagation
-        if: ${{ inputs.packages == 'all' && inputs.dry_run != true }}
-        run: sleep 30
+      - name: Build isonantic-ts
+        working-directory: isonantic-ts
+        run: |
+          npm ci
+          npm run build
 
       - name: Publish isonantic-ts
         working-directory: isonantic-ts
