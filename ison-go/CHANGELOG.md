@@ -17,6 +17,18 @@
 - Cross-language: verified against Python (v1.0.4) and other implementations
 - UTF-8 ordering confirmed with non-BMP character tests
 
+
+### Fixed — cross-implementation parity
+
+These were found by a new shared parity corpus (`benchmark/parity/`) whose expected output is generated from the ison-py reference. Every implementation now verifies against it byte-for-byte.
+
+- **Null Emitted as `~` (CRITICAL)**: `Value.ToISON()` emitted the `~` alias for null, which ison-py and ison-js parse as the *string* `"~"` — silently turning every null into a string when a document crossed implementations. Null is now emitted as `null`; `~` is still accepted on input for backward compatibility.
+- **Canonical ISONL Did Not Normalize Field Order**: `DumpsCanonicalISONL()` emitted fields in document order, so a document built from a Go map produced non-deterministic canonical ISONL. Fields are now sorted and rows keyed off the first canonical column.
+- **Inconsistent Trailing Newlines**: `Dumps`, `DumpsISONL` and `DumpsCanonicalISONL` appended a trailing newline while `DumpsCanonical` did not, and no other implementation emits one. All four now end at the last row.
+
+- **Parity Test**: `parity_test.go` verifies all four renderings plus canonical idempotence against the shared corpus.
+
+
 ## [1.0.0] - 2026-07-13
 
 ### Fixed

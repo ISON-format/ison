@@ -1269,6 +1269,7 @@ class ISONLRecord:
     name: str
     fields: list[str]
     values: dict[str, Any]
+    field_info: list[FieldInfo] = field(default_factory=list)
 
     def __repr__(self):
         return f"ISONLRecord({self.kind}.{self.name}, {self.values})"
@@ -1332,9 +1333,13 @@ class ISONLParser:
             )
         kind, name = header.split('.', 1)
 
-        # Parse fields
+        # Parse fields, including any type annotations. Without this an
+        # annotated envelope written by another implementation would be read
+        # as fields literally named 'id:int', silently corrupting the row keys.
         tokenizer = Tokenizer(fields_str, line_num)
-        fields = tokenizer.tokenize()
+        raw_fields = tokenizer.tokenize()
+        field_info_list = [FieldInfo.parse(rf) for rf in raw_fields]
+        fields = [fi.name for fi in field_info_list]
 
         # Parse values
         values_tokenizer = Tokenizer(values_str, line_num)
@@ -1374,7 +1379,8 @@ class ISONLParser:
             else:
                 values_dict[field] = None
 
-        return ISONLRecord(kind=kind, name=name, fields=fields, values=values_dict)
+        return ISONLRecord(kind=kind, name=name, fields=fields,
+                           values=values_dict, field_info=field_info_list)
 
     def _split_by_pipe(self, line: str) -> list[str]:
         """Split line by unquoted pipe characters"""
@@ -1461,7 +1467,8 @@ class ISONLParser:
             fields = recs[0].fields
             rows = [r.values for r in recs]
 
-            block = Block(kind=kind, name=name, fields=fields, rows=rows)
+            block = Block(kind=kind, name=name, fields=fields, rows=rows,
+                          field_info=recs[0].field_info)
             doc.blocks.append(block)
 
         return doc
@@ -1503,6 +1510,26 @@ class ISONLSerializer:
                 )
 
     @classmethod
+    def _fields_header(cls, block, field_names: list[str]) -> str:
+        """
+        Build the ISONL field section, preserving type annotations.
+
+        Dropping annotations here makes an ISON -> ISONL -> ISON round trip
+        lossy, and diverges from the implementations that do emit them.
+        """
+        if not block.field_info:
+            return ' '.join(field_names)
+
+        parts = []
+        for name in field_names:
+            fi = next((f for f in block.field_info if f.name == name), None)
+            if fi is not None and fi.type:
+                parts.append(f"{fi.name}:{fi.type}")
+            else:
+                parts.append(name)
+        return ' '.join(parts)
+
+    @classmethod
     def dumps(cls, doc: Document) -> str:
         """
         Serialize a Document to ISONL string.
@@ -1520,7 +1547,7 @@ class ISONLSerializer:
         for block in doc.blocks:
             cls._validate_envelope(block)
             header = f"{block.kind}.{block.name}"
-            fields_str = ' '.join(block.fields)
+            fields_str = cls._fields_header(block, block.fields)
 
             for row in block.rows:
                 values = []
@@ -1557,11 +1584,17 @@ class ISONLSerializer:
         for block in sorted_blocks:
             cls._validate_envelope(block)
             header = f"{block.kind}.{block.name}"
-            fields_str = ' '.join(block.fields)
 
-            # Sort rows by first column value (key)
-            if block.fields:
-                key_field = block.fields[0]
+            # Canonical form normalizes field order too, exactly as canonical
+            # ISON does. Without this, a document built from an unordered map
+            # (Rust HashMap, Go map, C# Dictionary) emits fields in whatever
+            # order iteration happened to produce.
+            sorted_fields = Serializer._sort_fields_canonical(block.fields)
+            fields_str = cls._fields_header(block, sorted_fields)
+
+            # Sort rows by first column value (key), using canonical field order
+            if sorted_fields:
+                key_field = sorted_fields[0]
                 sorted_rows = sorted(
                     block.rows,
                     key=lambda row: (
@@ -1574,7 +1607,7 @@ class ISONLSerializer:
 
             for row in sorted_rows:
                 values = []
-                for field in block.fields:
+                for field in sorted_fields:
                     value = row.get(field)
                     values.append(cls._value_to_isonl(value))
 

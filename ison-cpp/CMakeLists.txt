@@ -42,6 +42,22 @@ if(ISON_BUILD_TESTS)
     endif()
 
     add_test(NAME ison_cpp_tests COMMAND test_ison_cpp)
+
+    # Cross-language byte-identity against benchmark/parity. The corpus path is
+    # baked in so the test does not depend on the working directory (and stays
+    # C++11 — no <filesystem>).
+    add_executable(test_ison_parity tests/test_parity.cpp)
+    target_link_libraries(test_ison_parity PRIVATE ison_cpp)
+    target_compile_definitions(test_ison_parity PRIVATE
+        ISON_PARITY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../benchmark/parity")
+
+    if(MSVC)
+        target_compile_options(test_ison_parity PRIVATE /W4)
+    else()
+        target_compile_options(test_ison_parity PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    add_test(NAME ison_cpp_parity COMMAND test_ison_parity)
 endif()
 
 # Examples

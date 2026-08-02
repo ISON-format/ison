@@ -1,0 +1,4 @@
+table.users
+id:int active:bool name:string total:computed
+1 true Alice 99
+2 false Bob 88

@@ -1,0 +1,4 @@
+table.users|id name|2 Bob
+table.users|id name|1 Alice
+table.edges|source target|:2 :1
+table.posts|id title|10 Hello

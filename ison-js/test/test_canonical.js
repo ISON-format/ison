@@ -244,6 +244,9 @@ test('test_canonical_golden_fixture', () => {
      *
      * The expected output matches ison-py's reference test_canonical_golden_fixture
      * to ensure byte-identical canonical serialization across implementations.
+     *
+     * Fields are sorted canonically: 'id' first, then others by UTF-8 byte order.
+     * 'active' (0x61...) comes before 'name' (0x6E...) in UTF-8 byte order.
      */
     const doc = new Document();
 
@@ -265,6 +268,7 @@ test('test_canonical_golden_fixture', () => {
     const canonical = ISON.dumpsCanonical(doc);
 
     // Expected output: blocks sorted (edges < users), rows sorted within each
+    // Fields sorted canonically: id first, then by UTF-8 bytes (active < name)
     // Numeric strings like "1", "2", "3" are quoted by the serializer
     const expectedLines = [
         'table.edges',
@@ -273,14 +277,52 @@ test('test_canonical_golden_fixture', () => {
         ':2 :1',
         '',
         'table.users',
-        'id name active',
-        '"1" Alice true',
-        '"2" Bob true',
-        '"3" Charlie false',
+        'id active name',
+        '"1" true Alice',
+        '"2" true Bob',
+        '"3" false Charlie',
     ];
     const expected = expectedLines.join('\n');
 
     assertEqual(canonical, expected, 'canonical output should match golden fixture exactly');
+});
+
+test('test_canonical_utf16_divergence', () => {
+    /**
+     * UTF-16 divergence test: critical for cross-language byte-identity.
+     *
+     * JavaScript strings are UTF-16 internally. Native string comparison (<)
+     * uses UTF-16 code unit order, which diverges from UTF-8 byte order above U+FFFF.
+     *
+     * Test case:
+     *   - Ａfield (U+FF21 fullwidth A): 0xEF 0xBF 0xA1 in UTF-8
+     *   - 😀field (U+1F600 emoji): 0xF0 0x9F 0x98 0x80 in UTF-8
+     *
+     * UTF-8 byte comparison (correct): Ａfield < 😀field (0xEF < 0xF0)
+     * UTF-16 code unit comparison (wrong): 😀field < Ａfield (surrogate 0xD8 < 0xFF)
+     *
+     * This test verifies TextEncoder is used (not native string <).
+     */
+    const doc = new Document();
+    const block = new Block('table', 'utf16_divergence', ['id', 'Ａfield', '😀field'], [
+        { id: '101', 'Ａfield': 'fullwidth A (U+FF21)', '😀field': 'emoji (U+1F600)' },
+    ]);
+    doc.blocks.push(block);
+
+    const canonical = ISON.dumpsCanonical(doc);
+
+    // Fields should be sorted: id, Ａfield (0xEF), 😀field (0xF0) - UTF-8 order
+    // If using native string <, would get: id, 😀field, Ａfield (wrong)
+    assertIncludes(canonical, 'id Ａfield 😀field', 'fields must be in UTF-8 byte order (not UTF-16)');
+
+    const lines = canonical.split('\n');
+    const headerLine = lines[1];
+    const idIndex = headerLine.indexOf('id');
+    const afieldIndex = headerLine.indexOf('Ａfield');
+    const emojiIndex = headerLine.indexOf('😀field');
+
+    assert(idIndex < afieldIndex, 'id should come before Ａfield');
+    assert(afieldIndex < emojiIndex, 'Ａfield should come before 😀field (UTF-8 byte order)');
 });
 
 // =============================================================================

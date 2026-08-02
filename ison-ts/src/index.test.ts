@@ -746,17 +746,19 @@ describe("Canonical Serialization (ISONCS)", () => {
 
     const canonical = dumpsCanonical(doc);
 
-    // Expected order: blocks sorted (edges < users), rows sorted within each
+    // Expected order: blocks sorted (edges < users), rows sorted within each,
+    // and fields sorted per ISONCS -- 'id' hoisted first, remaining fields by
+    // UTF-8 byte order, so 'active' precedes 'name' regardless of input order.
     const expected = `table.edges
 source target
 :1 :3
 :2 :1
 
 table.users
-id name active
-"1" Alice true
-"2" Bob true
-"3" Charlie false`;
+id active name
+"1" true Alice
+"2" true Bob
+"3" false Charlie`;
 
     expect(canonical).toBe(expected);
   });

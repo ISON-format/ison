@@ -1,0 +1,12 @@
+table.edges
+source target
+:2 :1
+
+table.posts
+id title
+10 Hello
+
+table.users
+id name
+1 Alice
+2 Bob

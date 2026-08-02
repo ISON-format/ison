@@ -6,6 +6,15 @@
 - **Canonical Serialization (ISONCS)**: New `dumpsCanonical(doc)` and `dumpsCanonicalISONL(doc)` functions produce byte-identical output across implementations by sorting blocks and rows ordinal-string and emitting with fixed settings (single-space delimiter, no alignment). Supports content addressing, prefix stability (ISONGraph), and LLM prompt caching.
 - **Regression Tests**: Comprehensive test suite for canonical serialization with SHA256-verified golden fixture cross-implementation verification.
 
+
+### Fixed — cross-implementation parity
+
+These were found by a new shared parity corpus (`benchmark/parity/`) whose expected output is generated from the ison-py reference. Every implementation now verifies against it byte-for-byte.
+
+- **`dumps()` Defaulted to Aligned Output**: `dumps(doc)` defaulted to `alignColumns = true` while every other implementation defaults to `false`, contradicting the v1.0.1 changelog entry and emitting padded, token-inefficient output by default. Now defaults to `false`; pass `true` explicitly for aligned output.
+- **ISONL Dropped Type Annotations**: `dumpsISONL()` emitted bare field names, making an ISON → ISONL → ISON round trip lossy, and `ISONLParser` read an annotated envelope as fields literally named `id:int`, corrupting row keys. Annotations are now emitted and parsed.
+
+
 ## [1.0.2] - 2026-07-13
 
 ### Fixed

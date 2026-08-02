@@ -838,7 +838,7 @@
         }
 
         /**
-         * Serialize a single block in canonical form (sorted rows, no alignment).
+         * Serialize a single block in canonical form (sorted rows and fields, no alignment).
          * @private
          * @param {Block} block - Block to serialize
          * @returns {string} Canonical ISON block
@@ -849,26 +849,37 @@
             // Header
             lines.push(`${block.kind}.${block.name}`);
 
+            // Sort fields: id first (if present), then alphabetically by UTF-8 bytes
+            const sortedFields = Serializer._sortFieldsCanonical(block.fields);
+
             // Fields (with type annotations if present)
             if (block.fieldInfo && block.fieldInfo.length > 0) {
-                const fieldStrs = block.fieldInfo.map(fi => {
-                    if (fi.type) {
-                        return `${fi.name}:${fi.type}`;
+                const fieldStrs = [];
+                for (const fieldName of sortedFields) {
+                    // Find field_info for this field
+                    const fi = block.fieldInfo.find(f => f.name === fieldName);
+                    if (fi) {
+                        if (fi.type) {
+                            fieldStrs.push(`${fi.name}:${fi.type}`);
+                        } else {
+                            fieldStrs.push(fi.name);
+                        }
+                    } else {
+                        fieldStrs.push(fieldName);
                     }
-                    return fi.name;
-                });
+                }
                 lines.push(fieldStrs.join(' '));
             } else {
-                lines.push(block.fields.join(' '));
+                lines.push(sortedFields.join(' '));
             }
 
-            // Sort rows ordinal-string by first column value (key)
-            const sortedRows = Serializer._sortRowsByKey(block);
+            // Sort rows ordinal-string by first column value (using canonical field order)
+            const sortedRows = Serializer._sortRowsByKeyCanonical(block, sortedFields);
 
             // Data rows (no alignment, single-space delimiter)
             for (const row of sortedRows) {
                 const values = [];
-                for (const field of block.fields) {
+                for (const field of sortedFields) {
                     const value = Serializer._getNestedValue(row, field);
                     const strValue = Serializer._valueToISON(value);
                     values.push(strValue);
@@ -883,6 +894,89 @@
             }
 
             return lines.join('\n');
+        }
+
+        /**
+         * Sort fields for canonical form: id first, then alphabetically by UTF-8 bytes.
+         *
+         * Rationale:
+         * - Canonical form must be order-independent across implementations
+         * - Python dict insertion-order preservation masks unordered iteration in
+         *   Rust HashMap and Go map, causing cross-language byte-identity to fail
+         * - Sorting fields explicitly ensures byte-identical output regardless of
+         *   how the parser discovered them
+         * - 'id' hoisted first (anchor for :type:id references); remaining fields
+         *   sorted by UTF-8 byte comparison (ordinal, not Unicode code point)
+         *
+         * @private
+         * @param {Array} fields - Array of field names to sort
+         * @returns {Array} Sorted field names (id first if present, then UTF-8 ordered)
+         */
+        static _sortFieldsCanonical(fields) {
+            const encoder = new TextEncoder();
+
+            // Partition fields: id vs others
+            const idFields = fields.filter(f => f === 'id');
+            const otherFields = fields.filter(f => f !== 'id');
+
+            // Sort other fields by UTF-8 bytes (not by Unicode code points)
+            // Using bytes comparison ensures the same rule across all implementations
+            const sortedOthers = otherFields.sort((a, b) => {
+                const aBytes = encoder.encode(a);
+                const bBytes = encoder.encode(b);
+
+                // Compare byte-by-byte
+                for (let i = 0; i < Math.min(aBytes.length, bBytes.length); i++) {
+                    if (aBytes[i] !== bBytes[i]) {
+                        return aBytes[i] - bBytes[i];
+                    }
+                }
+
+                // If all compared bytes are equal, shorter comes first
+                return aBytes.length - bBytes.length;
+            });
+
+            // Return: id first (if present), then sorted others
+            return [...idFields, ...sortedOthers];
+        }
+
+        /**
+         * Sort rows ordinal-string by first column value (key), using canonical field order.
+         *
+         * The row key must be built from the *canonical* field order, not the input
+         * order, or row sorting depends on field order.
+         *
+         * @private
+         * @param {Block} block - Block whose rows to sort
+         * @param {Array} sortedFields - Pre-sorted field names (canonical order)
+         * @returns {Array} Sorted array of row objects
+         */
+        static _sortRowsByKeyCanonical(block, sortedFields) {
+            if (!block.rows || block.rows.length === 0 || !sortedFields || sortedFields.length === 0) {
+                return block.rows;
+            }
+
+            const keyField = sortedFields[0];
+
+            const sortedRows = [...block.rows].sort((rowA, rowB) => {
+                const keyValueA = Serializer._getNestedValue(rowA, keyField);
+                const keyValueB = Serializer._getNestedValue(rowB, keyField);
+
+                // Rows with null key sort to the end
+                const aIsNull = keyValueA === null || keyValueA === undefined;
+                const bIsNull = keyValueB === null || keyValueB === undefined;
+
+                if (aIsNull && bIsNull) return 0;
+                if (aIsNull) return 1;  // a goes after b
+                if (bIsNull) return -1; // b goes after a
+
+                // Ordinal (lexicographic) string comparison
+                const strA = String(keyValueA);
+                const strB = String(keyValueB);
+                return strA < strB ? -1 : strA > strB ? 1 : 0;
+            });
+
+            return sortedRows;
         }
 
         /**
@@ -938,11 +1032,15 @@
 
     /**
      * Serialize a Document to ISON string.
+     *
+     * Defaults to unaligned output for token efficiency, matching every other
+     * ISON implementation. Pass true to pad columns for readability.
+     *
      * @param {Document} doc - Document to serialize
      * @param {boolean} alignColumns - Whether to align columns for readability
      * @returns {string} ISON formatted string
      */
-    function dumps(doc, alignColumns = true) {
+    function dumps(doc, alignColumns = false) {
         return Serializer.dumps(doc, alignColumns);
     }
 
@@ -1196,11 +1294,12 @@
      * Represents a single ISONL record (one line)
      */
     class ISONLRecord {
-        constructor(kind, name, fields, values) {
+        constructor(kind, name, fields, values, fieldInfo = []) {
             this.kind = kind;
             this.name = name;
             this.fields = fields;
             this.values = values;
+            this.fieldInfo = fieldInfo;
         }
 
         toString() {
@@ -1269,9 +1368,13 @@
             const [kind, ...nameParts] = header.split('.');
             const name = nameParts.join('.');
 
-            // Parse fields
+            // Parse fields, including any type annotations. Without this an
+            // annotated envelope written by another implementation would be
+            // read as fields literally named 'id:int', corrupting row keys.
             const fieldsTokenizer = new Tokenizer(fieldsStr, lineNum);
-            const fields = fieldsTokenizer.tokenize();
+            const rawFields = fieldsTokenizer.tokenize();
+            const fieldInfo = rawFields.map(rf => FieldInfo.parse(rf));
+            const fields = fieldInfo.map(fi => fi.name);
 
             // Parse values
             const valuesTokenizer = new Tokenizer(valuesStr, lineNum);
@@ -1295,7 +1398,7 @@
                 valuesDict[fields[i]] = i < typedValues.length ? typedValues[i] : null;
             }
 
-            return new ISONLRecord(kind, name, fields, valuesDict);
+            return new ISONLRecord(kind, name, fields, valuesDict, fieldInfo);
         }
 
         /**
@@ -1388,7 +1491,7 @@
                 const fields = recs[0].fields;
                 const rows = recs.map(r => r.values);
 
-                const block = new Block(kind, name, fields, rows);
+                const block = new Block(kind, name, fields, rows, recs[0].fieldInfo);
                 doc.blocks.push(block);
             }
 
@@ -1400,6 +1503,25 @@
      * Serializer for ISONL format
      */
     class ISONLSerializer {
+        /**
+         * Build the ISONL field section, preserving type annotations.
+         *
+         * Dropping annotations makes an ISON -> ISONL -> ISON round trip lossy
+         * and diverges from the implementations that emit them.
+         * @param {Block} block
+         * @param {string[]} fieldNames - field names in the desired order
+         * @returns {string}
+         */
+        static _fieldsHeader(block, fieldNames) {
+            if (!block.fieldInfo || block.fieldInfo.length === 0) {
+                return fieldNames.join(' ');
+            }
+            return fieldNames.map(name => {
+                const fi = block.fieldInfo.find(f => f.name === name);
+                return fi && fi.type ? `${fi.name}:${fi.type}` : name;
+            }).join(' ');
+        }
+
         // Characters that would corrupt the line structure if they appeared
         // raw in the envelope (kind, name, or field names)
         static ENVELOPE_FORBIDDEN = ['|', '"', '\\', ' ', '\t', '\n', '\r'];
@@ -1454,7 +1576,7 @@
             for (const block of doc.blocks) {
                 ISONLSerializer._validateEnvelope(block);
                 const header = `${block.kind}.${block.name}`;
-                const fieldsStr = block.fields.join(' ');
+                const fieldsStr = ISONLSerializer._fieldsHeader(block, block.fields);
 
                 for (const row of block.rows) {
                     const values = [];
@@ -1535,12 +1657,57 @@
         }
 
         /**
+         * Sort fields for canonical form: id first, then alphabetically by UTF-8 bytes.
+         *
+         * Rationale:
+         * - Canonical form must be order-independent across implementations
+         * - Python dict insertion-order preservation masks unordered iteration in
+         *   Rust HashMap and Go map, causing cross-language byte-identity to fail
+         * - Sorting fields explicitly ensures byte-identical output regardless of
+         *   how the parser discovered them
+         * - 'id' hoisted first (anchor for :type:id references); remaining fields
+         *   sorted by UTF-8 byte comparison (ordinal, not Unicode code point)
+         *
+         * @private
+         * @param {Array} fields - Array of field names to sort
+         * @returns {Array} Sorted field names (id first if present, then UTF-8 ordered)
+         */
+        static _sortFieldsCanonical(fields) {
+            const encoder = new TextEncoder();
+
+            // Partition fields: id vs others
+            const idFields = fields.filter(f => f === 'id');
+            const otherFields = fields.filter(f => f !== 'id');
+
+            // Sort other fields by UTF-8 bytes (not by Unicode code points)
+            // Using bytes comparison ensures the same rule across all implementations
+            const sortedOthers = otherFields.sort((a, b) => {
+                const aBytes = encoder.encode(a);
+                const bBytes = encoder.encode(b);
+
+                // Compare byte-by-byte
+                for (let i = 0; i < Math.min(aBytes.length, bBytes.length); i++) {
+                    if (aBytes[i] !== bBytes[i]) {
+                        return aBytes[i] - bBytes[i];
+                    }
+                }
+
+                // If all compared bytes are equal, shorter comes first
+                return aBytes.length - bBytes.length;
+            });
+
+            // Return: id first (if present), then sorted others
+            return [...idFields, ...sortedOthers];
+        }
+
+        /**
          * Serialize a Document to canonical ISONL string.
          *
          * Canonical form produces byte-identical output across all implementations
          * for the same logical data. Blocks are sorted ordinal-string by key
          * (kind.name), rows within each block are sorted ordinal-string by the
-         * first column value (conventionally 'id').
+         * first column value (conventionally 'id'). Fields are sorted: 'id' first,
+         * then alphabetically by UTF-8 bytes.
          *
          * @param {Document} doc - Document to serialize
          * @returns {string} Canonical ISONL formatted string (deterministic, sorted)
@@ -1558,12 +1725,15 @@
             for (const block of sortedBlocks) {
                 ISONLSerializer._validateEnvelope(block);
                 const header = `${block.kind}.${block.name}`;
-                const fieldsStr = block.fields.join(' ');
 
-                // Sort rows by first column value (key)
+                // Sort fields: id first (if present), then alphabetically by UTF-8 bytes
+                const sortedFields = ISONLSerializer._sortFieldsCanonical(block.fields);
+                const fieldsStr = ISONLSerializer._fieldsHeader(block, sortedFields);
+
+                // Sort rows by first column value (using canonical field order)
                 let sortedRows;
-                if (block.fields && block.fields.length > 0) {
-                    const keyField = block.fields[0];
+                if (sortedFields && sortedFields.length > 0) {
+                    const keyField = sortedFields[0];
                     sortedRows = [...block.rows].sort((rowA, rowB) => {
                         const keyValueA = rowA[keyField];
                         const keyValueB = rowB[keyField];
@@ -1587,7 +1757,7 @@
 
                 for (const row of sortedRows) {
                     const values = [];
-                    for (const field of block.fields) {
+                    for (const field of sortedFields) {
                         const value = row[field];
                         values.push(ISONLSerializer._valueToISONL(value));
                     }

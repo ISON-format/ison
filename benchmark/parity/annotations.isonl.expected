@@ -1,0 +1,2 @@
+table.users|id:int name:string active:bool total:computed|1 Alice true 99
+table.users|id:int name:string active:bool total:computed|2 Bob false 88

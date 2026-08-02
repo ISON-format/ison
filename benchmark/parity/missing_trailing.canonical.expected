@@ -1,0 +1,4 @@
+table.t
+id active name
+1 null Alice
+2 true Bob

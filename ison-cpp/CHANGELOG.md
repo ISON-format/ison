@@ -17,6 +17,16 @@
 - Cross-language: verified against Python (v1.0.4) and other implementations
 - UTF-8 ordering confirmed with non-BMP character tests
 
+
+### Fixed — cross-implementation parity
+
+These were found by a new shared parity corpus (`benchmark/parity/`) whose expected output is generated from the ison-py reference. Every implementation now verifies against it byte-for-byte.
+
+- **ISONL Dropped Type Annotations**: `dumps_isonl()` and `dumps_canonical_isonl()` emitted bare field names, making an ISON → ISONL → ISON round trip lossy, and `ISONLParser` read an annotated envelope as fields literally named `id:int`, corrupting row keys. Annotations are now emitted and parsed.
+
+- **Parity Test**: `tests/test_parity.cpp` verifies all four renderings plus canonical idempotence against the shared corpus (C++11, reads `cases.txt`).
+
+
 ## [1.0.1] - 2026-07-13
 
 ### Fixed

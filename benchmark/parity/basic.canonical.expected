@@ -1,0 +1,4 @@
+table.users
+id active name
+1 true Alice
+2 false Bob

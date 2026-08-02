@@ -4,6 +4,7 @@ package ison
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -182,11 +183,16 @@ func (v Value) Interface() interface{} {
 	}
 }
 
-// ToISON converts the value to its ISON string representation
+// ToISON converts the value to its ISON string representation.
+//
+// Null is emitted as "null", not the "~" alias. Both are accepted on input,
+// but ison-py and ison-js parse a bare "~" as the string "~", so emitting it
+// silently turned every null into a string when the document crossed
+// implementations. "null" is read as null everywhere.
 func (v Value) ToISON() string {
 	switch v.Type {
 	case TypeNull:
-		return "~"
+		return "null"
 	case TypeBool:
 		if v.BoolVal {
 			return "true"
@@ -201,7 +207,7 @@ func (v Value) ToISON() string {
 	case TypeReference:
 		return v.RefVal.ToISON()
 	default:
-		return "~"
+		return "null"
 	}
 }
 
@@ -779,7 +785,7 @@ func DumpsWithOptions(doc *Document, opts DumpsOptions) string {
 				if val, ok := row[field.Name]; ok {
 					sb.WriteString(val.ToISON())
 				} else {
-					sb.WriteString("~")
+					sb.WriteString("null")
 				}
 			}
 			sb.WriteString("\n")
@@ -795,14 +801,16 @@ func DumpsWithOptions(doc *Document, opts DumpsOptions) string {
 				if val, ok := block.SummaryRow[field.Name]; ok {
 					sb.WriteString(val.ToISON())
 				} else {
-					sb.WriteString("~")
+					sb.WriteString("null")
 				}
 			}
 			sb.WriteString("\n")
 		}
 	}
 
-	return sb.String()
+	// No trailing newline: ison-py, ison-js, ison-ts and ison-cs all end
+	// output at the last row, and canonical byte-identity requires agreement.
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 // DumpsCanonical serializes a Document to canonical ISON format.
@@ -810,6 +818,7 @@ func DumpsWithOptions(doc *Document, opts DumpsOptions) string {
 // block ordinal-string by the first column value (the key), produces output
 // with single-space delimiter and no alignment, yielding byte-identical output
 // across implementations for the same logical data.
+// Empty blocks (no fields) are skipped.
 func DumpsCanonical(doc *Document) string {
 	// Sort block names by kind.name (ordinal-string comparison)
 	blockKeys := make([]string, 0, len(doc.Blocks))
@@ -819,15 +828,18 @@ func DumpsCanonical(doc *Document) string {
 	}
 	sort.Strings(blockKeys)
 
-	// Serialize each block canonically
-	blocksOutput := make([]string, len(blockKeys))
-	for i, key := range blockKeys {
+	// Serialize each block canonically (skip empty blocks)
+	blocksOutput := []string{}
+	for _, key := range blockKeys {
 		// Extract name from key (everything after the first dot)
 		parts := strings.SplitN(key, ".", 2)
 		if len(parts) == 2 {
 			name := parts[1]
 			block := doc.Blocks[name]
-			blocksOutput[i] = serializeBlockCanonical(block)
+			// Skip empty blocks (no fields)
+			if len(block.Fields) > 0 {
+				blocksOutput = append(blocksOutput, serializeBlockCanonical(block))
+			}
 		}
 	}
 
@@ -835,16 +847,47 @@ func DumpsCanonical(doc *Document) string {
 	return strings.Join(blocksOutput, "\n\n")
 }
 
-// serializeBlockCanonical serializes a single block in canonical form (sorted rows, no alignment)
+// sortFieldsCanonical sorts fields for canonical form: id first, then alphabetically by UTF-8 bytes.
+//
+// Rationale:
+// - Canonical form must be order-independent across implementations
+// - Go maps have unordered iteration, causing cross-language byte-identity to fail
+// - Sorting fields explicitly ensures byte-identical output regardless of how the parser discovered them
+// - 'id' hoisted first (anchor for :type:id references); remaining fields sorted by UTF-8 byte comparison
+func sortFieldsCanonical(fields []FieldInfo) []FieldInfo {
+	var idFields, otherFields []FieldInfo
+
+	for _, field := range fields {
+		if field.Name == "id" {
+			idFields = append(idFields, field)
+		} else {
+			otherFields = append(otherFields, field)
+		}
+	}
+
+	// Sort other fields by UTF-8 bytes using bytes.Compare()
+	sort.Slice(otherFields, func(i, j int) bool {
+		return bytes.Compare([]byte(otherFields[i].Name), []byte(otherFields[j].Name)) < 0
+	})
+
+	// Return: id first (if present), then sorted others
+	result := append(idFields, otherFields...)
+	return result
+}
+
+// serializeBlockCanonical serializes a single block in canonical form (sorted rows and fields, no alignment)
 func serializeBlockCanonical(block *Block) string {
 	lines := []string{}
 
 	// Header
 	lines = append(lines, fmt.Sprintf("%s.%s", block.Kind, block.Name))
 
+	// Sort fields: id first (if present), then alphabetically by UTF-8 bytes
+	sortedFields := sortFieldsCanonical(block.Fields)
+
 	// Fields (with type hints if present)
 	fieldStrs := []string{}
-	for _, field := range block.Fields {
+	for _, field := range sortedFields {
 		if field.TypeHint != "" {
 			fieldStrs = append(fieldStrs, fmt.Sprintf("%s:%s", field.Name, field.TypeHint))
 		} else {
@@ -853,17 +896,17 @@ func serializeBlockCanonical(block *Block) string {
 	}
 	lines = append(lines, strings.Join(fieldStrs, " "))
 
-	// Sort rows by first column value (ordinal-string comparison)
-	sortedRows := sortRowsByKey(block)
+	// Sort rows by first column value of sorted fields (ordinal-string comparison)
+	sortedRows := sortRowsByKeyCanonical(block, sortedFields)
 
 	// Data rows (no alignment, single-space delimiter)
 	for _, row := range sortedRows {
 		values := []string{}
-		for _, field := range block.Fields {
+		for _, field := range sortedFields {
 			if val, ok := row[field.Name]; ok {
 				values = append(values, val.ToISON())
 			} else {
-				values = append(values, "~")
+				values = append(values, "null")
 			}
 		}
 		lines = append(lines, strings.TrimRight(strings.Join(values, " "), " "))
@@ -873,11 +916,11 @@ func serializeBlockCanonical(block *Block) string {
 	if block.SummaryRow != nil {
 		lines = append(lines, "---")
 		values := []string{}
-		for _, field := range block.Fields {
+		for _, field := range sortedFields {
 			if val, ok := block.SummaryRow[field.Name]; ok {
 				values = append(values, val.ToISON())
 			} else {
-				values = append(values, "~")
+				values = append(values, "null")
 			}
 		}
 		lines = append(lines, strings.TrimRight(strings.Join(values, " "), " "))
@@ -894,6 +937,47 @@ func sortRowsByKey(block *Block) []Row {
 	}
 
 	keyFieldName := block.Fields[0].Name
+	rows := make([]Row, len(block.Rows))
+	copy(rows, block.Rows)
+
+	sort.SliceStable(rows, func(i, j int) bool {
+		keyI := rows[i][keyFieldName]
+		keyJ := rows[j][keyFieldName]
+
+		// Extract sort values
+		iIsNull := keyI.Type == TypeNull
+		jIsNull := keyJ.Type == TypeNull
+		iVal := valueToString(keyI)
+		jVal := valueToString(keyJ)
+
+		// Rows with null key sort to the end
+		if iIsNull && jIsNull {
+			return false // both null, maintain stable sort
+		}
+		if iIsNull {
+			return false // i is null, goes after j
+		}
+		if jIsNull {
+			return true // j is null, i goes before j
+		}
+
+		// Both have values: ordinal-string comparison
+		return iVal < jVal
+	})
+
+	return rows
+}
+
+// sortRowsByKeyCanonical sorts rows ordinal-string by their first column value
+// using the canonical (sorted) field order. The row key must be built from the
+// canonical field order, not the input order, or row sorting depends on field order.
+// Rows with null in the key column sort to the end.
+func sortRowsByKeyCanonical(block *Block, sortedFields []FieldInfo) []Row {
+	if len(block.Rows) == 0 || len(sortedFields) == 0 {
+		return block.Rows
+	}
+
+	keyFieldName := sortedFields[0].Name
 	rows := make([]Row, len(block.Rows))
 	copy(rows, block.Rows)
 
@@ -981,9 +1065,14 @@ func DumpsCanonicalISONL(doc *Document) (string, error) {
 			return "", err
 		}
 
+		// Canonical form normalizes field order here too, exactly as canonical
+		// ISON does. Without it, a document built from a Go map emits fields in
+		// whatever order iteration produced.
+		sortedFields := sortFieldsCanonical(block.Fields)
+
 		// Build field header
 		fieldHeader := strings.Builder{}
-		for i, field := range block.Fields {
+		for i, field := range sortedFields {
 			if i > 0 {
 				fieldHeader.WriteString(" ")
 			}
@@ -995,27 +1084,27 @@ func DumpsCanonicalISONL(doc *Document) (string, error) {
 		}
 		fields := fieldHeader.String()
 
-		// Sort rows by first column value (ordinal-string comparison)
-		sortedRows := sortRowsByKey(block)
+		// Sort rows by the first canonical column (ordinal-string comparison)
+		sortedRows := sortRowsByKeyCanonical(block, sortedFields)
 
 		// Write each row as a separate line
 		for _, row := range sortedRows {
 			sb.WriteString(fmt.Sprintf("%s.%s|%s|", block.Kind, block.Name, fields))
-			for i, field := range block.Fields {
+			for i, field := range sortedFields {
 				if i > 0 {
 					sb.WriteString(" ")
 				}
 				if val, ok := row[field.Name]; ok {
 					sb.WriteString(valueToISONL(val))
 				} else {
-					sb.WriteString("~")
+					sb.WriteString("null")
 				}
 			}
 			sb.WriteString("\n")
 		}
 	}
 
-	return sb.String(), nil
+	return strings.TrimRight(sb.String(), "\n"), nil
 }
 
 // headerPartPattern matches one half of a "kind.name" block header.
@@ -1211,14 +1300,14 @@ func DumpsISONL(doc *Document) (string, error) {
 				if val, ok := row[field.Name]; ok {
 					sb.WriteString(valueToISONL(val))
 				} else {
-					sb.WriteString("~")
+					sb.WriteString("null")
 				}
 			}
 			sb.WriteString("\n")
 		}
 	}
 
-	return sb.String(), nil
+	return strings.TrimRight(sb.String(), "\n"), nil
 }
 
 // splitISONLSections splits an ISONL line on unquoted pipe characters.

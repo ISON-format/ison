@@ -203,7 +203,9 @@ def test_canonical_golden_fixture():
 
     canonical = dumps_canonical(doc)
 
-    # Expected order: blocks sorted (edges < users), rows sorted within each
+    # Expected order: blocks sorted (edges < users), rows sorted within each,
+    # and fields sorted per ISONCS -- 'id' hoisted first, remaining fields by
+    # UTF-8 byte order, so 'active' precedes 'name' regardless of insertion order.
     # Note: numeric strings like "1", "2", "3" are quoted by the serializer
     expected_lines = [
         'table.edges',
@@ -212,10 +214,10 @@ def test_canonical_golden_fixture():
         ':2 :1',
         '',
         'table.users',
-        'id name active',
-        '"1" Alice true',
-        '"2" Bob true',
-        '"3" Charlie false',
+        'id active name',
+        '"1" true Alice',
+        '"2" true Bob',
+        '"3" false Charlie',
     ]
     expected = '\n'.join(expected_lines)
 

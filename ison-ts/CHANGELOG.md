@@ -6,6 +6,15 @@
 - **Canonical Serialization (ISONCS)**: New `dumpsCanonical(doc)` and `dumpsCanonicalIsonl(doc)` functions produce byte-identical output across implementations by sorting blocks and rows ordinal-string and emitting with fixed settings (single-space delimiter, no alignment). Supports content addressing, prefix stability (ISONGraph), and LLM prompt caching.
 - **Regression Tests**: Comprehensive test suite for canonical serialization with golden fixture verification.
 
+
+### Fixed — cross-implementation parity
+
+These were found by a new shared parity corpus (`benchmark/parity/`) whose expected output is generated from the ison-py reference. Every implementation now verifies against it byte-for-byte.
+
+- **Locale-Sensitive Canonical Ordering (CRITICAL)**: Canonical block and row sorting used `String.prototype.localeCompare`, which is culture-aware and treats punctuation as ignorable — ordering `co_op` before `co-op` where every other implementation orders `co-op` first — and is machine-locale dependent, so identical input could produce different bytes on different machines. All four sites now use ordinal comparison.
+- **Missing Field Sorting (CRITICAL)**: `dumpsCanonical()` and `dumpsCanonicalIsonl()` emitted fields in document order, so canonical output diverged from every other implementation whenever input field order differed. Fields are now sorted per ISONCS — `id` first, then by UTF-8 byte order via `TextEncoder` (not UTF-16 code units, which reverse non-BMP field names such as `Ａfield` vs `😀field`). Row ordering now keys off the first canonical column rather than the first input column.
+
+
 ## [1.0.2] - 2026-07-13
 
 ### Fixed

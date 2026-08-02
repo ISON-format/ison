@@ -1,0 +1,6 @@
+table.sales
+id amount
+1 100
+2 200
+---
+total 300

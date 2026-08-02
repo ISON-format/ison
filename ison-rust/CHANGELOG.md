@@ -6,6 +6,17 @@
 - **Canonical Serialization (ISONCS)**: New `dumps_canonical(doc)` and `dumps_canonical_isonl(doc)` functions produce byte-identical output across implementations by sorting blocks and rows ordinal-string and emitting with fixed settings (single-space delimiter, no alignment). Supports content addressing, prefix stability (ISONGraph), and LLM prompt caching.
 - **Regression Tests**: Comprehensive test suite for canonical serialization with golden fixture verification.
 
+
+### Fixed — cross-implementation parity
+
+These were found by a new shared parity corpus (`benchmark/parity/`) whose expected output is generated from the ison-py reference. Every implementation now verifies against it byte-for-byte.
+
+- **Over-Quoting Dotted Values**: the serializer quoted any value containing a `.`, so emails (`alice@example.com`), domains and version strings were quoted where every other implementation emits them bare — wasting tokens and breaking byte-identity. Only `ident.ident` shapes, which could be misread as a block header when alone on a line, are quoted now.
+- **Canonical ISONL Used ISON Quoting Rules**: canonical ISONL reused the ISON string serializer, so it applied the block-header rule (which cannot apply in ISONL, where every line carries its own envelope) and omitted pipe escaping. ISONL now has its own canonical quoting.
+
+- **Parity Test**: `tests/parity.rs` verifies all four renderings plus canonical idempotence against the shared corpus.
+
+
 ## [1.0.2] - 2026-07-13
 
 ### Fixed

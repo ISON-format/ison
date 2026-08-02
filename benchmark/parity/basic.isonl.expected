@@ -1,0 +1,2 @@
+table.users|id name active|1 Alice true
+table.users|id name active|2 Bob false

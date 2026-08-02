@@ -1,0 +1,4 @@
+table.scrambled
+score active id email name
+95.5 true 1 alice@example.com Alice
+87.3 false 2 bob@example.com Bob

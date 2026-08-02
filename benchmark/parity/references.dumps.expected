@@ -1,0 +1,4 @@
+table.edges
+source target rel
+:2 :1 :MEMBER_OF:7
+:1 :3 :user:101

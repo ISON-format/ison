@@ -3,6 +3,7 @@ package ison
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -405,7 +406,10 @@ func TestValueTypes(t *testing.T) {
 }
 
 func TestValueToISON(t *testing.T) {
-	assert.Equal(t, "~", Null().ToISON())
+	// Null emits "null", not the "~" alias: ison-py and ison-js parse a bare
+	// "~" as the string "~", so emitting it corrupted nulls across
+	// implementations. "~" is still accepted on input (see TestParseNullValues).
+	assert.Equal(t, "null", Null().ToISON())
 	assert.Equal(t, "true", Bool(true).ToISON())
 	assert.Equal(t, "false", Bool(false).ToISON())
 	assert.Equal(t, "42", Int(42).ToISON())
@@ -1171,7 +1175,7 @@ func TestCanonicalNullKeysSortLast(t *testing.T) {
 	}
 
 	// Rows with values come first, null keys last (numeric strings get quoted)
-	expected := []string{"\"1\" one", "\"2\" two", "~ orphan"}
+	expected := []string{"\"1\" one", "\"2\" two", "null orphan"}
 	assert.Equal(t, expected, dataLines)
 }
 
@@ -1343,6 +1347,86 @@ func TestCanonicalFieldInfoPreserved(t *testing.T) {
 	assert.Contains(t, canonical, "id:string count:int")
 }
 
+// TestCanonicalFieldsSorted tests that fields are sorted canonically (id first, then alphabetically by UTF-8 bytes)
+func TestCanonicalFieldsSorted(t *testing.T) {
+	doc := NewDocument()
+
+	block := NewBlock("table", "test")
+	// Add fields in non-canonical order
+	block.AddField("score", "")
+	block.AddField("active", "")
+	block.AddField("id", "")
+	block.AddField("email", "")
+	block.AddField("name", "")
+
+	block.AddRow(Row{
+		"id":     String("1"),
+		"name":   String("Alice"),
+		"email":  String("alice@example.com"),
+		"active": Bool(true),
+		"score":  Float(95.5),
+	})
+	doc.AddBlock(block)
+
+	canonical := DumpsCanonical(doc)
+	lines := strings.Split(canonical, "\n")
+
+	// Field header should be sorted: id first, then active, email, name, score
+	assert.Equal(t, "id active email name score", lines[1])
+}
+
+// TestCanonicalUTF8Divergence tests that UTF-8 byte comparison (not UTF-16) is used for field sorting
+func TestCanonicalUTF8Divergence(t *testing.T) {
+	doc := NewDocument()
+
+	block := NewBlock("table", "test")
+	// Add fields in reverse order to ensure sorting is happening
+	// Ａfield (fullwidth A, U+FF21 = 0xEF in UTF-8)
+	// 😀field (emoji, U+1F600 starts with 0xF0 in UTF-8)
+	// Since 0xEF < 0xF0, Ａfield should come before 😀field
+	block.AddField("id", "")
+	block.AddField("😀field", "")
+	block.AddField("Ａfield", "")
+
+	block.AddRow(Row{
+		"id":       String("101"),
+		"Ａfield":  String("fullwidth"),
+		"😀field": String("emoji"),
+	})
+	doc.AddBlock(block)
+
+	canonical := DumpsCanonical(doc)
+	lines := strings.Split(canonical, "\n")
+
+	// Field header should have Ａfield before 😀field (0xEF < 0xF0)
+	assert.Equal(t, "id Ａfield 😀field", lines[1])
+}
+
+// TestCanonicalGoldenFixtureBenchmark tests against the golden fixture from the benchmark directory
+func TestCanonicalGoldenFixtureBenchmark(t *testing.T) {
+	// Load the JSON golden fixture
+	jsonBytes, err := os.ReadFile("../benchmark/golden_fixture_field_sort.json")
+	require.NoError(t, err)
+
+	// Convert from JSON to Document
+	doc, err := FromJSON(string(jsonBytes))
+	require.NoError(t, err)
+
+	// Canonicalize
+	canonical := DumpsCanonical(doc)
+
+	// Load the expected output
+	expectedBytes, err := os.ReadFile("../benchmark/golden_fixture_field_sort.expected.ison")
+	require.NoError(t, err)
+	expected := string(expectedBytes)
+
+	// Normalize line endings (CRLF -> LF) for cross-platform comparison
+	expected = strings.ReplaceAll(expected, "\r\n", "\n")
+
+	// Verify byte-for-byte match
+	assert.Equal(t, expected, canonical, "Canonical output should match golden fixture exactly")
+}
+
 // TestCanonicalGoldenFixture tests the golden fixture from ison-py
 // This fixture is used for cross-implementation byte-identity verification.
 func TestCanonicalGoldenFixture(t *testing.T) {
@@ -1375,6 +1459,7 @@ func TestCanonicalGoldenFixture(t *testing.T) {
 	canonical := DumpsCanonical(doc)
 
 	// Expected order: blocks sorted (edges < users), rows sorted within each
+	// Fields are sorted canonically: id first, then alphabetically by UTF-8 bytes (active < name)
 	// Note: numeric strings like "1", "2", "3" are quoted by the serializer
 	expectedLines := []string{
 		"table.edges",
@@ -1383,10 +1468,10 @@ func TestCanonicalGoldenFixture(t *testing.T) {
 		":2 :1",
 		"",
 		"table.users",
-		"id name active",
-		"\"1\" Alice true",
-		"\"2\" Bob true",
-		"\"3\" Charlie false",
+		"id active name",
+		"\"1\" true Alice",
+		"\"2\" true Bob",
+		"\"3\" false Charlie",
 	}
 	expected := strings.Join(expectedLines, "\n")
 

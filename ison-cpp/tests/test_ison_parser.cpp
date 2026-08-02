@@ -1034,17 +1034,20 @@ TEST(canonical_golden_fixture) {
 
     std::string canonical = dumps_canonical(doc);
 
-    // Expected output with blocks sorted (edges < users) and rows sorted within each
+    // Expected output with blocks sorted (edges < users), fields sorted (id first, then alphabetical),
+    // and rows sorted within each
+    // For edges: source < target (alphabetical)
+    // For users: id first, then active < name (alphabetical)
     std::string expected = R"(table.edges
 source target
 :1 :3
 :2 :1
 
 table.users
-id name active
-"1" Alice true
-"2" Bob true
-"3" Charlie false)";
+id active name
+"1" true Alice
+"2" true Bob
+"3" false Charlie)";
 
     ASSERT_EQ(canonical, expected);
 }
@@ -1140,6 +1143,45 @@ TEST(canonical_with_references) {
     ASSERT(pos_1 < pos_2);
 }
 
+TEST(canonical_utf8_field_sorting) {
+    /**
+     * Critical test: UTF-8 byte comparison must use UNSIGNED char.
+     *
+     * Ａfield (U+FF21, fullwidth A): UTF-8 bytes 0xEF 0xBF 0xA1 (starts 0xEF)
+     * 😀field (U+1F600, emoji):      UTF-8 bytes 0xF0 0x9F 0x98 0x80 (starts 0xF0)
+     *
+     * Correct order (unsigned):  Ａfield < 😀field (0xEF < 0xF0)
+     * Wrong order (signed):      😀field < Ａfield (0xF0 > 0xEF, but as signed: -16 > -17)
+     *
+     * This test ensures we use unsigned char comparison to avoid the x86 signed trap.
+     */
+    Document doc;
+    Block utf16_test("table", "utf16_divergence");
+
+    // Add fields in reverse order to test sorting
+    utf16_test.fields.push_back("😀field");   // U+1F600: 0xF0 9F 98 80
+    utf16_test.fields.push_back("Ａfield");   // U+FF21:  0xEF BF A1
+    utf16_test.fields.push_back("id");
+
+    Row row1;
+    row1["id"] = Value("1");
+    row1["Ａfield"] = Value("fullwidth A");
+    row1["😀field"] = Value("emoji");
+    utf16_test.rows.push_back(row1);
+
+    doc.blocks.push_back(utf16_test);
+
+    std::string canonical = dumps_canonical(doc);
+
+    // Field order after sorting should be: id, Ａfield (0xEF), 😀field (0xF0)
+    // NOT: id, 😀field, Ａfield (which would be wrong if using signed char)
+    std::string expected = R"(table.utf16_divergence
+id Ａfield 😀field
+"1" "fullwidth A" emoji)";
+
+    ASSERT_EQ(canonical, expected);
+}
+
 // =============================================================================
 // Main
 // =============================================================================
@@ -1219,6 +1261,7 @@ int main() {
     RUN_TEST(canonical_null_keys_sort_last);
     RUN_TEST(canonical_no_alignment);
     RUN_TEST(canonical_golden_fixture);
+    RUN_TEST(canonical_utf8_field_sorting);
     RUN_TEST(canonical_isonl_blocks_sorted);
     RUN_TEST(canonical_isonl_rows_sorted);
     RUN_TEST(canonical_with_references);

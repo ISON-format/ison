@@ -1,0 +1,3 @@
+table.t
+id backslashed nl quoted tabbed
+1 "back\\slash" "line\nbreak" "quote\"inside" "tab\there"

@@ -11,6 +11,15 @@
 - **ISONCS Specification Updated**: ISONCS.md now documents field ordering rules, reserved field names (`id`), UTF-8 byte vs Unicode code point divergence, and cross-implementation verification approach.
 - **Regression Tests Expanded**: Added field-order independence tests, table signature order-independence tests, and UTF-16 divergence sentinel tests. All six implementations (Python, Rust, JavaScript, TypeScript, C#, Go, C++) verified on shared golden fixture.
 
+
+### Fixed — cross-implementation parity
+
+These were found by a new shared parity corpus (`benchmark/parity/`) whose expected output is generated from the ison-py reference. Every implementation now verifies against it byte-for-byte.
+
+- **ISONL Dropped Type Annotations**: `dumps_isonl()` emitted bare field names, making an ISON → ISONL → ISON round trip lossy, and `ISONLParser` read an annotated envelope written by another implementation as fields literally named `id:int`, silently corrupting row keys. Annotations are now emitted and parsed.
+- **Canonical ISONL Did Not Normalize Field Order**: `ISONLSerializer.dumps_canonical()` emitted fields in document order while canonical ISON sorted them. ISONCS requires field insertion order to be normalized in canonical form, so a document built from an unordered map produced non-deterministic canonical ISONL.
+
+
 ## [1.0.3] - 2026-07-13
 
 ### Fixed

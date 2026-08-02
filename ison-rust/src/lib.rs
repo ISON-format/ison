@@ -772,6 +772,28 @@ fn check_extra_tokens(
 // Serializer
 // =============================================================================
 
+/// One half of a `kind.name` block header: an identifier starting with a
+/// letter or underscore, followed by letters, digits, underscores or hyphens.
+fn is_header_part(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Whether a value would be mistaken for a `kind.name` block header if emitted
+/// unquoted as the only token on a line.
+///
+/// Deliberately narrower than "contains a dot": `alice@example.com`, `a.b.c`
+/// and `v1.2` are all safe unquoted, and quoting them would waste tokens and
+/// diverge from the other implementations.
+fn looks_like_block_header(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+    parts.len() == 2 && parts.iter().all(|p| is_header_part(p))
+}
+
 struct Serializer {
     align_columns: bool,
     delimiter: String,
@@ -894,11 +916,11 @@ impl Serializer {
             || s.contains('\r')
             || s.contains('"')
             || s.contains('\\')
-            // Any '.' is quoted; this subsumes the header-shaped-value rule
-            // ('ident.ident' like "a.true" or "object.config" would
-            // otherwise be re-parsed as a new block header, splitting the
-            // block on re-parse).
-            || s.contains('.')
+            // Only 'ident.ident' shapes need quoting: alone on a line they
+            // would be re-parsed as a block header. Quoting every value
+            // containing a '.' would also quote emails, domains and version
+            // strings, which costs tokens and diverges from the other ports.
+            || looks_like_block_header(s)
             || s == "true"
             || s == "false"
             || s == "null"
@@ -948,6 +970,65 @@ impl CanonicalSerializer {
         parts.join("\n\n")
     }
 
+    fn sort_fields_canonical(&self, fields: &[String]) -> Vec<String> {
+        // Sort fields for canonical form: id first, then alphabetically by UTF-8 bytes.
+        // Rationale:
+        // - Canonical form must be order-independent across implementations
+        // - Python dict insertion-order preservation masks unordered iteration in
+        //   Rust HashMap and Go map, causing cross-language byte-identity to fail
+        // - Sorting fields explicitly ensures byte-identical output regardless of
+        //   how the parser discovered them
+        // - 'id' hoisted first (anchor for :type:id references); remaining fields
+        //   sorted by UTF-8 byte comparison (ordinal, not Unicode code point)
+
+        // Partition fields: id vs others
+        let id_fields: Vec<String> = fields.iter().filter(|f| *f == "id").cloned().collect();
+        let mut other_fields: Vec<String> = fields.iter().filter(|f| *f != "id").cloned().collect();
+
+        // Sort other fields by UTF-8 bytes (not by Unicode code points)
+        // Using bytes comparison ensures the same rule across all implementations
+        other_fields.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+        // Return: id first (if present), then sorted others
+        [id_fields, other_fields].concat()
+    }
+
+    fn sort_rows_by_key_canonical(&self, block: &Block, sorted_fields: &[String]) -> Vec<Row> {
+        // Sort rows ordinal-string by first column value (key), using canonical field order.
+        // The row key must be built from the *canonical* field order, not the input
+        // order, or row sorting depends on field order (identical bug one level up).
+
+        if block.rows.is_empty() || sorted_fields.is_empty() {
+            return block.rows.clone();
+        }
+
+        let mut sorted_rows = block.rows.clone();
+        let key_field = &sorted_fields[0];
+
+        sorted_rows.sort_by(|a, b| {
+            let val_a = a.get(key_field);
+            let val_b = b.get(key_field);
+
+            // Null values (missing or Value::Null) sort to the end
+            let is_null_a = val_a.is_none() || matches!(val_a, Some(Value::Null));
+            let is_null_b = val_b.is_none() || matches!(val_b, Some(Value::Null));
+
+            match (is_null_a, is_null_b) {
+                (true, true) => std::cmp::Ordering::Equal,
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                (false, false) => {
+                    // Both are non-null, compare as strings
+                    let str_a = self.value_to_string(val_a.unwrap());
+                    let str_b = self.value_to_string(val_b.unwrap());
+                    str_a.cmp(&str_b)
+                }
+            }
+        });
+
+        sorted_rows
+    }
+
     fn serialize_isonl(&self, doc: &Document) -> Result<String> {
         let mut lines = Vec::new();
 
@@ -963,58 +1044,43 @@ impl CanonicalSerializer {
             validate_isonl_envelope(block)?;
             let header = format!("{}.{}", block.kind, block.name);
 
+            // Sort fields: id first (if present), then alphabetically by UTF-8 bytes
+            let sorted_fields = self.sort_fields_canonical(&block.fields);
+
             // Serialize field definitions - use field_info if available, otherwise use fields directly
             let fields: Vec<String> = if !block.field_info.is_empty() {
-                block
-                    .field_info
+                sorted_fields
                     .iter()
-                    .map(|fi| {
-                        if let Some(ref ft) = fi.field_type {
-                            format!("{}:{}", fi.name, ft)
+                    .map(|field_name| {
+                        // Find field_info for this field
+                        if let Some(fi) = block.field_info.iter().find(|fi| &fi.name == field_name) {
+                            if let Some(ref ft) = fi.field_type {
+                                format!("{}:{}", fi.name, ft)
+                            } else {
+                                fi.name.clone()
+                            }
                         } else {
-                            fi.name.clone()
+                            field_name.clone()
                         }
                     })
                     .collect()
             } else {
-                block.fields.clone()
+                sorted_fields.clone()
             };
             let fields_str = fields.join(" ");
 
-            // Sort rows ordinal-string by first column value (key)
-            let mut sorted_rows = block.rows.clone();
-            if !block.fields.is_empty() {
-                let key_field = &block.fields[0];
-                sorted_rows.sort_by(|a, b| {
-                    let val_a = a.get(key_field);
-                    let val_b = b.get(key_field);
+            // Sort rows ordinal-string by first column value (key), using canonical field order
+            let sorted_rows = self.sort_rows_by_key_canonical(block, &sorted_fields);
 
-                    // Null values (missing or Value::Null) sort to the end
-                    let is_null_a = val_a.is_none() || matches!(val_a, Some(Value::Null));
-                    let is_null_b = val_b.is_none() || matches!(val_b, Some(Value::Null));
-
-                    match (is_null_a, is_null_b) {
-                        (true, true) => std::cmp::Ordering::Equal,
-                        (true, false) => std::cmp::Ordering::Greater,
-                        (false, true) => std::cmp::Ordering::Less,
-                        (false, false) => {
-                            // Both are non-null, compare as strings
-                            let str_a = self.value_to_string(val_a.unwrap());
-                            let str_b = self.value_to_string(val_b.unwrap());
-                            str_a.cmp(&str_b)
-                        }
-                    }
-                });
-            }
-
-            // Serialize each row
+            // Serialize each row. ISONL values use their own quoting rules:
+            // the pipe is significant, but a value can never be misread as a
+            // block header because every line carries its own envelope.
             for row in &sorted_rows {
-                let values: Vec<String> = block
-                    .fields
+                let values: Vec<String> = sorted_fields
                     .iter()
                     .map(|f| {
                         row.get(f)
-                            .map(|v| self.serialize_value_canonical(v))
+                            .map(|v| self.serialize_value_canonical_isonl(v))
                             .unwrap_or_else(|| "null".to_string())
                     })
                     .collect();
@@ -1031,54 +1097,37 @@ impl CanonicalSerializer {
         // Header
         lines.push(format!("{}.{}", block.kind, block.name));
 
+        // Sort fields: id first (if present), then alphabetically by UTF-8 bytes
+        let sorted_fields = self.sort_fields_canonical(&block.fields);
+
         // Fields with types - use field_info if available, otherwise use fields directly
         let field_defs: Vec<String> = if !block.field_info.is_empty() {
-            block
-                .field_info
+            sorted_fields
                 .iter()
-                .map(|fi| {
-                    if let Some(ref ft) = fi.field_type {
-                        format!("{}:{}", fi.name, ft)
+                .map(|field_name| {
+                    // Find field_info for this field
+                    if let Some(fi) = block.field_info.iter().find(|fi| &fi.name == field_name) {
+                        if let Some(ref ft) = fi.field_type {
+                            format!("{}:{}", fi.name, ft)
+                        } else {
+                            fi.name.clone()
+                        }
                     } else {
-                        fi.name.clone()
+                        field_name.clone()
                     }
                 })
                 .collect()
         } else {
-            block.fields.clone()
+            sorted_fields.clone()
         };
         lines.push(field_defs.join(" "));
 
-        // Sort rows ordinal-string by first column value (key)
-        let mut sorted_rows = block.rows.clone();
-        if !block.fields.is_empty() {
-            let key_field = &block.fields[0];
-            sorted_rows.sort_by(|a, b| {
-                let val_a = a.get(key_field);
-                let val_b = b.get(key_field);
-
-                // Null values (missing or Value::Null) sort to the end
-                let is_null_a = val_a.is_none() || matches!(val_a, Some(Value::Null));
-                let is_null_b = val_b.is_none() || matches!(val_b, Some(Value::Null));
-
-                match (is_null_a, is_null_b) {
-                    (true, true) => std::cmp::Ordering::Equal,
-                    (true, false) => std::cmp::Ordering::Greater,
-                    (false, true) => std::cmp::Ordering::Less,
-                    (false, false) => {
-                        // Both are non-null, compare as strings
-                        let str_a = self.value_to_string(val_a.unwrap());
-                        let str_b = self.value_to_string(val_b.unwrap());
-                        str_a.cmp(&str_b)
-                    }
-                }
-            });
-        }
+        // Sort rows ordinal-string by first column value (key), using canonical field order
+        let sorted_rows = self.sort_rows_by_key_canonical(block, &sorted_fields);
 
         // Data rows (no alignment, single-space delimiter)
         for row in &sorted_rows {
-            let values: Vec<String> = block
-                .fields
+            let values: Vec<String> = sorted_fields
                 .iter()
                 .map(|f| {
                     row.get(f)
@@ -1093,8 +1142,7 @@ impl CanonicalSerializer {
         if !block.summary_rows.is_empty() {
             lines.push("---".to_string());
             for row in &block.summary_rows {
-                let values: Vec<String> = block
-                    .fields
+                let values: Vec<String> = sorted_fields
                     .iter()
                     .map(|f| {
                         row.get(f)
@@ -1120,6 +1168,53 @@ impl CanonicalSerializer {
         }
     }
 
+    fn serialize_value_canonical_isonl(&self, value: &Value) -> String {
+        match value {
+            Value::String(s) => self.serialize_string_canonical_isonl(s),
+            other => self.serialize_value_canonical(other),
+        }
+    }
+
+    /// Quoting for canonical ISONL values.
+    ///
+    /// Differs from the ISON rules in two ways: the pipe separates sections so
+    /// it must be escaped, and a value can never be mistaken for a block
+    /// header (every ISONL line carries its own `kind.name` envelope), so the
+    /// header-shape rule does not apply and would only waste tokens.
+    fn serialize_string_canonical_isonl(&self, s: &str) -> String {
+        if s.is_empty() {
+            return "\"\"".to_string();
+        }
+
+        let needs_quotes = s.contains(' ')
+            || s.contains('\t')
+            || s.contains('\n')
+            || s.contains('\r')
+            || s.contains('"')
+            || s.contains('\\')
+            || s.contains('|')
+            || s == "true"
+            || s == "false"
+            || s == "null"
+            || s.starts_with('#')
+            || s.starts_with(':')
+            || s.parse::<f64>().is_ok();
+
+        if !needs_quotes {
+            return s.to_string();
+        }
+
+        format!(
+            "\"{}\"",
+            s.replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+                .replace('\t', "\\t")
+                .replace('\r', "\\r")
+                .replace('|', "\\|")
+        )
+    }
+
     fn serialize_string_canonical(&self, s: &str) -> String {
         if s.is_empty() {
             return "\"\"".to_string();
@@ -1132,7 +1227,7 @@ impl CanonicalSerializer {
             || s.contains('\r')
             || s.contains('"')
             || s.contains('\\')
-            || s.contains('.')
+            || looks_like_block_header(s)
             || s == "true"
             || s == "false"
             || s == "null"
@@ -2017,6 +2112,189 @@ pub fn json_to_ison_with_options(json_text: &str, opts: JsonToIsonOptions) -> Re
     Ok(dumps(&doc, opts.align_columns))
 }
 
+/// Convert JSON to canonical ISON format (requires serde feature)
+#[cfg(feature = "serde")]
+pub fn json_to_ison_canonical(json_text: &str) -> Result<String> {
+    // Use default options for JSON to ISON conversion
+    let json_value: serde_json::Value = serde_json::from_str(json_text)
+        .map_err(|e| ISONError { message: format!("JSON parse error: {}", e), line: None })?;
+
+    let obj = json_value.as_object()
+        .ok_or_else(|| ISONError { message: "JSON must be an object".to_string(), line: None })?;
+
+    let mut doc = Document::new();
+    let mut extra_blocks: Vec<Block> = Vec::new();
+
+
+    // Helper to check if value is an array of arrays
+    fn is_array_of_arrays(val: &serde_json::Value) -> bool {
+        if let Some(arr) = val.as_array() {
+            !arr.is_empty() && arr[0].is_array()
+        } else {
+            false
+        }
+    }
+
+    // Helper to convert JSON value to ISON Value
+    fn json_to_value(val: &serde_json::Value) -> Value {
+        match val {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Bool(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Int(i)
+                } else if let Some(f) = n.as_f64() {
+                    Value::Float(f)
+                } else {
+                    Value::String(n.to_string())
+                }
+            }
+            serde_json::Value::String(s) => {
+                if s.starts_with(':') {
+                    let parts: Vec<&str> = s[1..].splitn(2, ':').collect();
+                    if parts.len() == 2 {
+                        Value::Reference(Reference::with_type(parts[1], parts[0]))
+                    } else {
+                        Value::Reference(Reference::new(parts[0]))
+                    }
+                } else {
+                    Value::String(s.clone())
+                }
+            }
+            _ => Value::String(val.to_string()),
+        }
+    }
+
+    for (block_name, block_value) in obj {
+        if let Some(arr) = block_value.as_array() {
+            // Handle array of arrays
+            if is_array_of_arrays(block_value) {
+                let max_cols = arr.iter()
+                    .filter_map(|r| r.as_array())
+                    .map(|a| a.len())
+                    .max()
+                    .unwrap_or(0);
+
+                let fields: Vec<String> = (1..=max_cols).map(|i| format!("col{}", i)).collect();
+                let field_info: Vec<FieldInfo> = fields.iter()
+                    .map(|f| FieldInfo::new(f))
+                    .collect();
+
+                let mut rows = Vec::new();
+                for item in arr {
+                    if let Some(inner_arr) = item.as_array() {
+                        let mut row = Row::new();
+                        for (i, field) in fields.iter().enumerate() {
+                            if i < inner_arr.len() {
+                                row.insert(field.clone(), json_to_value(&inner_arr[i]));
+                            } else {
+                                row.insert(field.clone(), Value::Null);
+                            }
+                        }
+                        rows.push(row);
+                    }
+                }
+
+                doc.blocks.push(Block {
+                    kind: "table".to_string(),
+                    name: block_name.clone(),
+                    fields,
+                    field_info,
+                    rows,
+                    summary_rows: vec![],
+                });
+                continue;
+            }
+
+            // Handle array of objects
+            if arr.is_empty() {
+                continue;
+            }
+
+            if !arr[0].is_object() {
+                // Array of primitives at top level
+                let fields = vec!["value".to_string()];
+                let field_info = vec![FieldInfo::new("value")];
+                let rows: Vec<Row> = arr.iter()
+                    .map(|v| {
+                        let mut row = Row::new();
+                        row.insert("value".to_string(), json_to_value(v));
+                        row
+                    })
+                    .collect();
+
+                doc.blocks.push(Block {
+                    kind: "table".to_string(),
+                    name: block_name.clone(),
+                    fields,
+                    field_info,
+                    rows,
+                    summary_rows: vec![],
+                });
+                continue;
+            }
+
+            // Collect all fields from all objects
+            let mut field_set: Vec<String> = Vec::new();
+            let mut rows = Vec::new();
+
+            for item in arr {
+                if let Some(item_obj) = item.as_object() {
+                    let mut row = Row::new();
+                    for (key, val) in item_obj {
+                        row.insert(key.clone(), json_to_value(val));
+                        if !field_set.contains(key) {
+                            field_set.push(key.clone());
+                        }
+                    }
+                    rows.push(row);
+                }
+            }
+
+            let field_info: Vec<FieldInfo> = field_set.iter()
+                .map(|f| FieldInfo::new(f))
+                .collect();
+
+            doc.blocks.push(Block {
+                kind: "table".to_string(),
+                name: block_name.clone(),
+                fields: field_set,
+                field_info,
+                rows,
+                summary_rows: vec![],
+            });
+        } else if let Some(obj_value) = block_value.as_object() {
+            // Single object
+            let mut fields: Vec<String> = Vec::new();
+            let mut row = Row::new();
+
+            for (key, val) in obj_value {
+                row.insert(key.clone(), json_to_value(val));
+                fields.push(key.clone());
+            }
+
+            let field_info = fields.iter().map(|f| FieldInfo::new(f)).collect();
+
+            doc.blocks.push(Block {
+                kind: "table".to_string(),
+                name: block_name.clone(),
+                fields,
+                field_info,
+                rows: vec![row],
+                summary_rows: vec![],
+            });
+        }
+    }
+
+    // Add extra blocks from flattened structures
+    for block in extra_blocks {
+        doc.blocks.push(block);
+    }
+
+    // Return canonical ISON (field-sorted, row-sorted output)
+    Ok(dumps_canonical(&doc))
+}
+
 /// Convert ISON to JSON format (requires serde feature)
 #[cfg(feature = "serde")]
 pub fn ison_to_json(ison_text: &str, pretty: bool) -> Result<String> {
@@ -2122,15 +2400,17 @@ id name email
 
         let doc = parse(ison).unwrap();
 
-        // Test with comma delimiter (emails get quoted because they contain '.')
+        // Emails are emitted bare: only 'ident.ident' shapes could be misread
+        // as a block header, so quoting every dotted value would waste tokens
+        // and diverge from the other implementations.
         let comma_output = dumps_with_delimiter(&doc, false, ",");
         assert!(comma_output.contains("id,name,email"));
-        assert!(comma_output.contains("1,Alice,\"alice@example.com\""));
+        assert!(comma_output.contains("1,Alice,alice@example.com"));
 
         // Test with default space delimiter
         let space_output = dumps_with_delimiter(&doc, false, " ");
         assert!(space_output.contains("id name email"));
-        assert!(space_output.contains("1 Alice \"alice@example.com\""));
+        assert!(space_output.contains("1 Alice alice@example.com"));
     }
 
     #[test]
@@ -2742,7 +3022,8 @@ id name email
 
         let canonical = dumps_canonical(&doc);
 
-        // Expected order: blocks sorted (edges < users), rows sorted within each
+        // Expected order: blocks sorted (edges < users), fields sorted canonically
+        // (id first, then alphabetically by UTF-8 bytes), rows sorted by key
         let expected_lines = vec![
             "table.edges",
             "source target",
@@ -2750,10 +3031,10 @@ id name email
             ":2 :1",
             "",
             "table.users",
-            "id name active",
-            "\"1\" Alice true",
-            "\"2\" Bob true",
-            "\"3\" Charlie false",
+            "id active name",
+            "\"1\" true Alice",
+            "\"2\" true Bob",
+            "\"3\" false Charlie",
         ];
         let expected = expected_lines.join("\n");
 
@@ -2868,5 +3149,177 @@ id name email
         let canonical = dumps_canonical(&doc);
 
         assert!(canonical.contains("id:string count:int"));
+    }
+
+    #[test]
+    fn test_canonical_field_sort_golden_fixture() {
+        // Golden fixture: validates field sorting by UTF-8 bytes across key test cases
+        // especially the UTF-16 divergence case where Ａ (0xEF) < 😀 (0xF0)
+
+        let mut doc = Document::new();
+
+        // Test 1: no_id (no id field, all sorted alphabetically)
+        let mut no_id = Block::new("table", "no_id");
+        no_id.fields = vec!["name".to_string(), "city".to_string(), "age".to_string()]; // scrambled order
+        let mut row = Row::new();
+        row.insert("name".to_string(), Value::String("Charlie".to_string()));
+        row.insert("city".to_string(), Value::String("New York".to_string()));
+        row.insert("age".to_string(), Value::Int(30));
+        no_id.rows.push(row);
+        doc.blocks.push(no_id);
+
+        // Test 2: scrambled (id first, then sorted: active < email < name < score)
+        let mut scrambled = Block::new("table", "scrambled");
+        scrambled.fields = vec![
+            "score".to_string(),
+            "active".to_string(),
+            "id".to_string(),
+            "email".to_string(),
+            "name".to_string(),
+        ]; // scrambled order
+
+        let mut row1 = Row::new();
+        row1.insert("score".to_string(), Value::Float(95.5));
+        row1.insert("active".to_string(), Value::Bool(true));
+        row1.insert("id".to_string(), Value::Int(1));
+        row1.insert("email".to_string(), Value::String("alice@example.com".to_string()));
+        row1.insert("name".to_string(), Value::String("Alice".to_string()));
+        scrambled.rows.push(row1);
+
+        let mut row2 = Row::new();
+        row2.insert("score".to_string(), Value::Float(87.3));
+        row2.insert("active".to_string(), Value::Bool(false));
+        row2.insert("id".to_string(), Value::Int(2));
+        row2.insert("email".to_string(), Value::String("bob@example.com".to_string()));
+        row2.insert("name".to_string(), Value::String("Bob".to_string()));
+        scrambled.rows.push(row2);
+
+        doc.blocks.push(scrambled);
+
+        // Test 3: UTF-16 divergence (CRITICAL: Ａfield (0xEF) < 😀field (0xF0))
+        let mut utf16_div = Block::new("table", "utf16_divergence");
+        utf16_div.fields = vec![
+            "😀field".to_string(),
+            "id".to_string(),
+            "Ａfield".to_string(),
+        ]; // reversed order
+
+        let mut row3 = Row::new();
+        row3.insert("😀field".to_string(), Value::String("non-BMP emoji (U+1F600 starts 0xF0 in UTF-8)".to_string()));
+        row3.insert("id".to_string(), Value::Int(101));
+        row3.insert("Ａfield".to_string(), Value::String("fullwidth A (U+FF21 is 0xEF in UTF-8)".to_string()));
+        utf16_div.rows.push(row3);
+
+        doc.blocks.push(utf16_div);
+
+        let canonical = dumps_canonical(&doc);
+
+        // Verify field ordering: id comes first, then others sorted by UTF-8 bytes
+        assert!(
+            canonical.contains("table.no_id\nage city name"),
+            "no_id: fields should be sorted as 'age city name'"
+        );
+
+        assert!(
+            canonical.contains("table.scrambled\nid active email name score"),
+            "scrambled: fields should be sorted as 'id active email name score'"
+        );
+
+        assert!(
+            canonical.contains("table.utf16_divergence\nid Ａfield 😀field"),
+            "utf16_divergence: CRITICAL - Ａfield (0xEF) should come before 😀field (0xF0)"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_canonical_field_sort_json_golden_fixture() {
+        // Load the JSON golden fixture and verify canonical output matches expected
+        let json_input = r#"{
+  "scrambled": [
+    {
+      "score": 95.5,
+      "active": true,
+      "id": 1,
+      "email": "alice@example.com",
+      "name": "Alice"
+    },
+    {
+      "name": "Bob",
+      "email": "bob@example.com",
+      "score": 87.3,
+      "id": 2,
+      "active": false
+    }
+  ],
+  "no_id": [
+    {
+      "city": "New York",
+      "age": 30,
+      "name": "Charlie"
+    }
+  ],
+  "utf16_divergence": [
+    {
+      "id": 101,
+      "😀field": "non-BMP emoji (U+1F600 starts 0xF0 in UTF-8)",
+      "Ａfield": "fullwidth A (U+FF21 is 0xEF in UTF-8)"
+    }
+  ],
+  "users_order_1": [
+    {
+      "id": 1001,
+      "name": "David",
+      "email": "david@example.com"
+    }
+  ],
+  "users_order_2": [
+    {
+      "email": "eve@example.com",
+      "name": "Eve",
+      "id": 1002
+    }
+  ],
+  "empty": [],
+  "single_row": [
+    {
+      "id": 9999,
+      "value": "only_one"
+    }
+  ]
+}"#;
+
+        // Convert JSON to canonical ISON
+        let canonical_result = json_to_ison_canonical(json_input);
+        assert!(canonical_result.is_ok(), "JSON to canonical ISON conversion should succeed");
+
+        let canonical = canonical_result.unwrap();
+
+        // Verify critical field sorting cases:
+
+        // 1. no_id: all fields sorted (no 'id' field to prioritize)
+        assert!(canonical.contains("table.no_id\nage city name"),
+                "no_id: fields should be 'age city name' (alphabetically sorted by UTF-8 bytes)");
+
+        // 2. scrambled: id first, then others sorted
+        assert!(canonical.contains("table.scrambled\nid active email name score"),
+                "scrambled: fields should be 'id active email name score' (id first, then sorted)");
+
+        // 3. UTF-16 divergence: THE CRITICAL TEST
+        // Ａ (U+FF21) = EF BC A1 in UTF-8 (starts with 0xEF)
+        // 😀 (U+1F600) = F0 9F 98 80 in UTF-8 (starts with 0xF0)
+        // Since EF < F0, Ａfield should come before 😀field
+        assert!(canonical.contains("table.utf16_divergence\nid Ａfield 😀field"),
+                "UTF-16 DIVERGENCE: Ａfield (0xEF...) must come before 😀field (0xF0...) by UTF-8 byte order");
+
+        // 4. single_row: id first, then value
+        assert!(canonical.contains("table.single_row\nid value"),
+                "single_row: fields should be 'id value' (id first, then value)");
+
+        // 5. users_order_1 and users_order_2: both should have same canonical field order
+        assert!(canonical.contains("table.users_order_1\nid email name"),
+                "users_order_1: fields should be 'id email name'");
+        assert!(canonical.contains("table.users_order_2\nid email name"),
+                "users_order_2: fields should also be 'id email name' (field order is canonical, not input order)");
     }
 }

@@ -784,8 +784,9 @@ public:
      * Serialize a Document to canonical ISON string.
      *
      * Canonical form sorts blocks and rows ordinal-string on their keys,
-     * uses single-space delimiter and no alignment, producing byte-identical
-     * output across implementations for the same logical data.
+     * sorts fields (id first, then UTF-8 byte order), uses single-space
+     * delimiter and no alignment, producing byte-identical output across
+     * implementations for the same logical data.
      *
      * The key for each row is the first column's value (conventionally 'id').
      * Rows with null in the key column sort after rows with values.
@@ -814,27 +815,82 @@ public:
 
 private:
     /**
-     * Serialize a single block in canonical form (sorted rows, no alignment).
+     * Sort fields in canonical order: 'id' first (if present),
+     * then all other fields sorted by UTF-8 byte comparison.
+     *
+     * CRITICAL: Uses UNSIGNED char comparison to avoid x86 signed char trap.
+     * Bytes >= 0x80 must sort by their unsigned values, not as negative signed values.
+     * Example: Ａfield (U+FF21: 0xEF...) must sort before 😀field (U+1F600: 0xF0...)
+     */
+    static std::vector<std::string> sort_fields_canonical(const std::vector<std::string>& fields) {
+        std::vector<std::string> id_fields;
+        std::vector<std::string> other_fields;
+
+        // Partition: separate 'id' field from others
+        for (size_t i = 0; i < fields.size(); ++i) {
+            if (fields[i] == "id") {
+                id_fields.push_back(fields[i]);
+            } else {
+                other_fields.push_back(fields[i]);
+            }
+        }
+
+        // Sort other fields by UTF-8 bytes (using UNSIGNED char comparison)
+        std::sort(other_fields.begin(), other_fields.end(),
+            [](const std::string& a, const std::string& b) {
+                // Cast to unsigned char* to avoid signed char trap on x86
+                const auto* a_bytes = reinterpret_cast<const unsigned char*>(a.data());
+                const auto* b_bytes = reinterpret_cast<const unsigned char*>(b.data());
+                size_t min_len = std::min(a.size(), b.size());
+
+                // Compare byte-by-byte as unsigned values
+                for (size_t i = 0; i < min_len; ++i) {
+                    if (a_bytes[i] != b_bytes[i]) {
+                        return a_bytes[i] < b_bytes[i];
+                    }
+                }
+                // If all common bytes match, shorter one comes first
+                return a.size() < b.size();
+            });
+
+        // Return: id first (if present), then sorted others
+        std::vector<std::string> result = id_fields;
+        result.insert(result.end(), other_fields.begin(), other_fields.end());
+        return result;
+    }
+
+    /**
+     * Serialize a single block in canonical form (sorted fields, sorted rows, no alignment).
+     *
+     * Fields are sorted in canonical order: 'id' first (if present), then
+     * other fields by UTF-8 byte comparison.
      */
     static std::string serialize_block_canonical(const Block& block) {
         std::vector<std::string> lines;
         lines.push_back(block.kind + "." + block.name);
 
-        // Fields line (with type annotations if present)
+        // Sort fields in canonical order: 'id' first, then by UTF-8 bytes
+        std::vector<std::string> sorted_fields = sort_fields_canonical(block.fields);
+
+        // Build fields line with type annotations if present
         std::string fields_line;
-        for (size_t i = 0; i < block.field_info.size(); ++i) {
+        for (size_t i = 0; i < sorted_fields.size(); ++i) {
             if (i > 0) fields_line += " ";
-            const FieldInfo& fi = block.field_info[i];
-            if (fi.type.has_value()) {
-                fields_line += fi.name + ":" + fi.type.value();
-            } else {
-                fields_line += fi.name;
+            const std::string& field_name = sorted_fields[i];
+
+            // Find field_info for this field to get type annotation if present
+            Optional<std::string> field_type;
+            for (size_t j = 0; j < block.field_info.size(); ++j) {
+                if (block.field_info[j].name == field_name) {
+                    field_type = block.field_info[j].type;
+                    break;
+                }
             }
-        }
-        if (fields_line.empty() && !block.fields.empty()) {
-            for (size_t i = 0; i < block.fields.size(); ++i) {
-                if (i > 0) fields_line += " ";
-                fields_line += block.fields[i];
+
+            if (field_type.has_value()) {
+                fields_line += field_name + ":" + field_type.value();
+            } else {
+                fields_line += field_name;
             }
         }
         lines.push_back(fields_line);
@@ -845,8 +901,8 @@ private:
             sorted_rows.push_back(&block.rows[i]);
         }
 
-        if (!block.fields.empty()) {
-            const std::string& key_field = block.fields[0];
+        if (!sorted_fields.empty()) {
+            const std::string& key_field = sorted_fields[0];
             std::sort(sorted_rows.begin(), sorted_rows.end(),
                       [&key_field](const Row* a, const Row* b) {
                           Row::const_iterator it_a = a->find(key_field);
@@ -874,10 +930,10 @@ private:
         for (size_t i = 0; i < sorted_rows.size(); ++i) {
             const Row& row = *sorted_rows[i];
             std::string row_line;
-            for (size_t j = 0; j < block.fields.size(); ++j) {
+            for (size_t j = 0; j < sorted_fields.size(); ++j) {
                 if (j > 0) row_line += " ";
                 std::string str_value = "null";
-                Row::const_iterator it = row.find(block.fields[j]);
+                Row::const_iterator it = row.find(sorted_fields[j]);
                 if (it != row.end()) {
                     str_value = value_to_ison(it->second);
                 }
@@ -1156,6 +1212,7 @@ struct ISONLRecord {
     std::string kind;
     std::string name;
     std::vector<std::string> fields;
+    std::vector<FieldInfo> field_info;
     Row values;
 
     std::string to_block_key() const { return kind + "." + name; }
@@ -1186,8 +1243,16 @@ public:
         record.kind = sections[0].substr(0, dot_pos);
         record.name = sections[0].substr(dot_pos + 1);
 
+        // Parse fields, including any type annotations. Without this an
+        // annotated envelope written by another implementation would be read
+        // as fields literally named "id:int", corrupting the row keys.
         Tokenizer field_tokenizer(sections[1], line_num);
-        record.fields = field_tokenizer.tokenize();
+        std::vector<std::string> raw_fields = field_tokenizer.tokenize();
+        for (size_t i = 0; i < raw_fields.size(); ++i) {
+            FieldInfo fi = FieldInfo::parse(raw_fields[i]);
+            record.field_info.push_back(fi);
+            record.fields.push_back(fi.name);
+        }
 
         Tokenizer value_tokenizer(sections[2], line_num);
         std::vector<std::string> raw_values = value_tokenizer.tokenize();
@@ -1309,6 +1374,7 @@ private:
             block.kind = key.substr(0, dot_pos);
             block.name = key.substr(dot_pos + 1);
             block.fields = recs[0]->fields;
+            block.field_info = recs[0]->field_info;
 
             for (size_t j = 0; j < recs.size(); ++j) {
                 block.rows.push_back(recs[j]->values);
@@ -1323,6 +1389,28 @@ private:
 
 class ISONLSerializer {
 public:
+    // Build the ISONL field section, preserving type annotations. Dropping
+    // them makes an ISON -> ISONL -> ISON round trip lossy and diverges from
+    // the rest of the family.
+    static std::string fields_header(const Block& block,
+                                     const std::vector<std::string>& field_names) {
+        std::string out;
+        for (size_t i = 0; i < field_names.size(); ++i) {
+            if (i > 0) out += " ";
+            out += field_names[i];
+
+            for (size_t j = 0; j < block.field_info.size(); ++j) {
+                if (block.field_info[j].name == field_names[i]) {
+                    if (block.field_info[j].type.has_value()) {
+                        out += ":" + block.field_info[j].type.value();
+                    }
+                    break;
+                }
+            }
+        }
+        return out;
+    }
+
     static std::string dumps(const Document& doc) {
         std::ostringstream oss;
         bool first = true;
@@ -1332,11 +1420,7 @@ public:
             validate_envelope(block);
             std::string header = block.kind + "." + block.name;
 
-            std::string fields_str;
-            for (size_t i = 0; i < block.fields.size(); ++i) {
-                if (i > 0) fields_str += " ";
-                fields_str += block.fields[i];
-            }
+            std::string fields_str = fields_header(block, block.fields);
 
             for (size_t ri = 0; ri < block.rows.size(); ++ri) {
                 if (!first) oss << "\n";
@@ -1364,7 +1448,8 @@ public:
     /**
      * Serialize a Document to canonical ISONL string.
      *
-     * Blocks are sorted ordinal-string by key (kind.name), rows within
+     * Blocks are sorted ordinal-string by key (kind.name), fields within
+     * each block are sorted (id first, then by UTF-8 bytes), rows within
      * each block are sorted ordinal-string by first column value, producing
      * byte-identical output across implementations for the same logical data.
      */
@@ -1390,11 +1475,10 @@ public:
             validate_envelope(block);
             std::string header = block.kind + "." + block.name;
 
-            std::string fields_str;
-            for (size_t i = 0; i < block.fields.size(); ++i) {
-                if (i > 0) fields_str += " ";
-                fields_str += block.fields[i];
-            }
+            // Sort fields in canonical order (id first, then by UTF-8 bytes)
+            std::vector<std::string> sorted_fields = sort_fields_canonical_isonl(block.fields);
+
+            std::string fields_str = fields_header(block, sorted_fields);
 
             // Sort rows by first column value (key)
             std::vector<const Row*> sorted_rows;
@@ -1402,8 +1486,8 @@ public:
                 sorted_rows.push_back(&block.rows[i]);
             }
 
-            if (!block.fields.empty()) {
-                const std::string& key_field = block.fields[0];
+            if (!sorted_fields.empty()) {
+                const std::string& key_field = sorted_fields[0];
                 std::sort(sorted_rows.begin(), sorted_rows.end(),
                           [&key_field](const Row* a, const Row* b) {
                               Row::const_iterator it_a = a->find(key_field);
@@ -1433,9 +1517,9 @@ public:
 
                 const Row& row = *sorted_rows[ri];
                 std::string values_str;
-                for (size_t i = 0; i < block.fields.size(); ++i) {
+                for (size_t i = 0; i < sorted_fields.size(); ++i) {
                     if (i > 0) values_str += " ";
-                    Row::const_iterator it = row.find(block.fields[i]);
+                    Row::const_iterator it = row.find(sorted_fields[i]);
                     if (it != row.end()) {
                         values_str += value_to_isonl(it->second);
                     } else {
@@ -1451,6 +1535,48 @@ public:
     }
 
 private:
+    /**
+     * Sort fields in canonical order: 'id' first (if present),
+     * then all other fields sorted by UTF-8 byte comparison.
+     * (Private helper for ISONLSerializer)
+     */
+    static std::vector<std::string> sort_fields_canonical_isonl(const std::vector<std::string>& fields) {
+        std::vector<std::string> id_fields;
+        std::vector<std::string> other_fields;
+
+        // Partition: separate 'id' field from others
+        for (size_t i = 0; i < fields.size(); ++i) {
+            if (fields[i] == "id") {
+                id_fields.push_back(fields[i]);
+            } else {
+                other_fields.push_back(fields[i]);
+            }
+        }
+
+        // Sort other fields by UTF-8 bytes (using UNSIGNED char comparison)
+        std::sort(other_fields.begin(), other_fields.end(),
+            [](const std::string& a, const std::string& b) {
+                // Cast to unsigned char* to avoid signed char trap on x86
+                const auto* a_bytes = reinterpret_cast<const unsigned char*>(a.data());
+                const auto* b_bytes = reinterpret_cast<const unsigned char*>(b.data());
+                size_t min_len = std::min(a.size(), b.size());
+
+                // Compare byte-by-byte as unsigned values
+                for (size_t i = 0; i < min_len; ++i) {
+                    if (a_bytes[i] != b_bytes[i]) {
+                        return a_bytes[i] < b_bytes[i];
+                    }
+                }
+                // If all common bytes match, shorter one comes first
+                return a.size() < b.size();
+            });
+
+        // Return: id first (if present), then sorted others
+        std::vector<std::string> result = id_fields;
+        result.insert(result.end(), other_fields.begin(), other_fields.end());
+        return result;
+    }
+
     /**
      * Convert a value to a string for ordinal-string sorting.
      */

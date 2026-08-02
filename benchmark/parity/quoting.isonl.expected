@@ -1,0 +1,1 @@
+table.t|id plain spaced numlike boollike nulllike hashy colony empty|1 Alice "has space" "123" "true" "null" "#tag" ":ref" ""

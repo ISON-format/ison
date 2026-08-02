@@ -586,6 +586,83 @@ class Parser {
 // Serializer
 // =============================================================================
 
+/**
+ * Ordinal (code-unit) string comparison.
+ *
+ * Canonical form must order keys by code unit, never by locale. String.prototype
+ * .localeCompare is culture-aware and treats punctuation as ignorable, so it
+ * orders "co_op" before "co-op" while every other ISON implementation orders
+ * "co-op" first. It is also locale-dependent, so the same input can produce
+ * different bytes on different machines. Both break ISONCS byte-identity.
+ */
+function compareOrdinal(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Sort fields for canonical form: 'id' first, then by UTF-8 byte order.
+ *
+ * Canonical form must be independent of the order a parser happened to
+ * discover fields in, because hash-table iteration is unspecified (Rust
+ * HashMap, Go map, C# Dictionary).
+ *
+ * TypeScript strings are UTF-16 internally, so the comparison must run over
+ * the UTF-8 encoding. Comparing strings directly compares UTF-16 code units
+ * and reverses non-BMP field names: "Ａfield" (U+FF21) encodes to EF BF A1 and
+ * must precede "😀field" (U+1F600) which encodes to F0 9F 98 80, yet in UTF-16
+ * the emoji's leading surrogate D83D sorts before FF21.
+ */
+function sortFieldsCanonical(fields: string[]): string[] {
+  const encoder = new TextEncoder();
+  const idFields = fields.filter(f => f === 'id');
+  const otherFields = fields.filter(f => f !== 'id');
+
+  const sortedOthers = otherFields.slice().sort((a, b) => {
+    const ab = encoder.encode(a);
+    const bb = encoder.encode(b);
+    const min = Math.min(ab.length, bb.length);
+    for (let i = 0; i < min; i++) {
+      if (ab[i] !== bb[i]) return ab[i] - bb[i];
+    }
+    return ab.length - bb.length;
+  });
+
+  return [...idFields, ...sortedOthers];
+}
+
+/**
+ * Build a field header for the given field order, preserving type annotations.
+ */
+function fieldsHeader(block: Block, fieldNames: string[]): string {
+  if (!block.fieldInfo || block.fieldInfo.length === 0) {
+    return fieldNames.join(' ');
+  }
+  return fieldNames
+    .map(name => {
+      const fi = block.fieldInfo.find(f => f.name === name);
+      return fi && fi.type ? `${fi.name}:${fi.type}` : name;
+    })
+    .join(' ');
+}
+
+/**
+ * Sort rows ordinal-string by the given key field; null keys sort last.
+ */
+function sortRowsByKeyField(rows: Row[], keyField: string | undefined): Row[] {
+  if (!rows || rows.length === 0 || !keyField) return rows;
+
+  return [...rows].sort((a, b) => {
+    const keyA = a[keyField];
+    const keyB = b[keyField];
+    const aNull = keyA === null || keyA === undefined;
+    const bNull = keyB === null || keyB === undefined;
+    if (aNull && bNull) return 0;
+    if (aNull) return 1;
+    if (bNull) return -1;
+    return compareOrdinal(String(keyA), String(keyB));
+  });
+}
+
 class Serializer {
   constructor(
     private readonly alignColumns: boolean = false,
@@ -742,7 +819,7 @@ class Serializer {
     const sortedBlocks = [...doc.blocks].sort((a, b) => {
       const keyA = `${a.kind}.${a.name}`;
       const keyB = `${b.kind}.${b.name}`;
-      return keyA.localeCompare(keyB);
+      return compareOrdinal(keyA, keyB);
     });
 
     for (const block of sortedBlocks) {
@@ -758,28 +835,18 @@ class Serializer {
     // Header
     lines.push(`${block.kind}.${block.name}`);
 
-    // Fields with types
-    let fieldDefs: string[] = [];
-    if (block.fieldInfo.length > 0) {
-      fieldDefs = block.fieldInfo.map(fi => {
-        if (fi.type) {
-          return `${fi.name}:${fi.type}`;
-        }
-        return fi.name;
-      });
-    } else {
-      // Use fields array if fieldInfo is not populated
-      fieldDefs = block.fields;
-    }
-    lines.push(fieldDefs.join(' '));
+    // Canonical field order: 'id' first, then by UTF-8 byte order
+    const sortedFields = sortFieldsCanonical(block.fields);
+    lines.push(fieldsHeader(block, sortedFields));
 
-    // Sort rows ordinal-string by first column value (key)
-    const sortedRows = this.sortRowsByKey(block);
+    // Sort rows ordinal-string by the first *canonical* column. Using the
+    // input order here would make row order depend on field order.
+    const sortedRows = sortRowsByKeyField(block.rows, sortedFields[0]);
 
     // Data rows (single-space delimiter, no alignment)
     for (const row of sortedRows) {
       const values: string[] = [];
-      for (const field of block.fields) {
+      for (const field of sortedFields) {
         const value = row[field];
         values.push(this.serializeValue(value));
       }
@@ -825,7 +892,7 @@ class Serializer {
       // Ordinal (lexicographic) string comparison
       const strA = String(keyA);
       const strB = String(keyB);
-      return strA.localeCompare(strB);
+      return compareOrdinal(strA, strB);
     });
   }
 }
@@ -1105,26 +1172,23 @@ class ISONLSerializer {
     const sortedBlocks = [...doc.blocks].sort((a, b) => {
       const keyA = `${a.kind}.${a.name}`;
       const keyB = `${b.kind}.${b.name}`;
-      return keyA.localeCompare(keyB);
+      return compareOrdinal(keyA, keyB);
     });
 
     for (const block of sortedBlocks) {
       this.validateEnvelope(block);
       const header = `${block.kind}.${block.name}`;
 
-      // Build fields string with type annotations if available
-      let fieldsStr: string;
-      if (block.fieldInfo.length > 0) {
-        fieldsStr = block.fieldInfo.map(fi => fi.type ? `${fi.name}:${fi.type}` : fi.name).join(" ");
-      } else {
-        fieldsStr = block.fields.join(" ");
-      }
+      // Canonical form normalizes field order here too, exactly as canonical
+      // ISON does.
+      const sortedFields = sortFieldsCanonical(block.fields);
+      const fieldsStr = fieldsHeader(block, sortedFields);
 
-      // Sort rows ordinal-string by first column value (key)
-      const sortedRows = this.sortRowsByKey(block);
+      // Sort rows ordinal-string by the first canonical column
+      const sortedRows = sortRowsByKeyField(block.rows, sortedFields[0]);
 
       for (const row of sortedRows) {
-        const values = block.fields.map(f => this.serializeValue(row[f])).join(" ");
+        const values = sortedFields.map(f => this.serializeValue(row[f])).join(" ");
         lines.push(`${header}|${fieldsStr}|${values}`);
       }
     }
@@ -1155,7 +1219,7 @@ class ISONLSerializer {
       // Ordinal (lexicographic) string comparison
       const strA = String(keyA);
       const strB = String(keyB);
-      return strA.localeCompare(strB);
+      return compareOrdinal(strA, strB);
     });
   }
 }
