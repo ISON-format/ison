@@ -37,16 +37,41 @@ jobs:
           python -m pip install --upgrade pip
           pip install build twine
 
+      # PyPI never allows a version to be overwritten, so re-running with an
+      # already-published version should skip rather than fail on a 400.
+      - name: Preflight version check
+        id: preflight
+        working-directory: ison-py
+        run: |
+          set -uo pipefail
+          VERSION="$(grep -m1 '^version' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          HEAD="$(grep -m1 '^## \[' CHANGELOG.md | sed -E 's/^## \[([^]]+)\].*/\1/')"
+
+          if [ "$VERSION" != "$HEAD" ]; then
+            echo "::error::ison-py version ($VERSION) != CHANGELOG head ($HEAD)"
+            exit 1
+          fi
+
+          if [ "$(curl -sS -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/ison-py/$VERSION/json")" = "200" ]; then
+            echo "ison-py $VERSION is already on PyPI — nothing to publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ison-py $VERSION ready to publish"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build package
+        if: ${{ steps.preflight.outputs.skip != 'true' }}
         working-directory: ison-py
         run: python -m build
 
       - name: Check package
+        if: ${{ steps.preflight.outputs.skip != 'true' }}
         working-directory: ison-py
         run: twine check dist/*
 
       - name: Publish to PyPI
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ inputs.dry_run != true && steps.preflight.outputs.skip != 'true' }}
         working-directory: ison-py
         env:
           TWINE_USERNAME: __token__
@@ -54,19 +79,20 @@ jobs:
         run: twine upload dist/*
 
       - name: Dry run - show what would be published
-        if: ${{ inputs.dry_run == true }}
+        if: ${{ inputs.dry_run == true && steps.preflight.outputs.skip != 'true' }}
         working-directory: ison-py
         run: |
           echo "Would publish:"
           ls -la dist/
 
-  # ison-cli depends on ison-py, so it publishes after it when 'all' is
-  # selected. `needs` plus `always()` lets it still run on its own.
+  # ison-cli depends on ison-py being present on PyPI, not on this run having
+  # published it. `needs` only orders the jobs; the gate deliberately omits
+  # !failure() so an already-published ison-py cannot block the CLI.
   publish-ison-cli:
     name: Publish ison-cli
     runs-on: ubuntu-latest
     needs: publish-ison-py
-    if: ${{ always() && !failure() && !cancelled() && (inputs.packages == 'all' || inputs.packages == 'ison-cli') }}
+    if: ${{ always() && !cancelled() && (inputs.packages == 'all' || inputs.packages == 'ison-cli') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
