@@ -5,8 +5,23 @@ All notable changes to this project will be documented in this file.
 ## [1.0.1] - 2026-08-01
 
 ### Added
-- **Field Sorting in ISONCS**: `DumpsCanonical()` now sorts fields for deterministic output across implementations. Algorithm: `id` field first, then alphabetically by UTF-8 bytes.
+- **ISON Parser**: `Ison.Loads(text)` / `Ison.Parse(text)` / `Ison.Load(path)` parse ISON documents into a `Document`. Full support for block headers, field type annotations, type inference (int, float, bool, null, string), references (`:id`, `:type:id`, `:RELATIONSHIP:id`), quoted strings with escape sequences, dot-path nested fields, `---` summary rows, and comments.
+- **ISON Serializer**: `Ison.Dumps(doc, alignColumns, delimiter)` / `Ison.Dump(doc, path)` with the full round-trip quoting rules — values containing whitespace, quotes, `\r`, `\\`, a leading `#` or `:`, literal lookalikes (`true`/`false`/`null`/numbers), and `kind.name` block-header lookalikes are all quoted so they survive re-parsing.
+- **ISONL Support**: `Ison.LoadsIsonl` / `Ison.DumpsIsonl` / `Ison.DumpsCanonicalIsonl`, plus `IsonlParser.Stream()` for line-at-a-time streaming. The pipe splitter is quote- and escape-aware, so values ending in a backslash cannot desync section parsing.
+- **Format Conversion**: `Ison.IsonToIsonl` and `Ison.IsonlToIson`.
+- **JSON Interop**: `Ison.FromJson` / `Ison.ToJson`, with an encoder that reproduces Python's `json.dumps` defaults (`", "` / `": "` separators and `ensure_ascii` escaping) so JSON-encoded values embedded in ISON stay byte-identical across implementations.
+- **Strict Row Validation**: Rows carrying more values than declared fields now throw `IsonSyntaxException` instead of silently truncating data. Missing trailing values still parse as null.
+- **Inline Comments**: An unquoted token starting with `#` begins an inline comment; quoted tokens like `"#tag"` remain data.
+- **Field Sorting in ISONCS**: `DumpsCanonical()` sorts fields for deterministic output across implementations. Algorithm: `id` field first, then alphabetically by UTF-8 bytes.
 - **UTF-8 Byte Comparison (CRITICAL)**: Uses `System.Text.Encoding.UTF8.GetBytes()` for byte-level UTF-8 comparison (NOT `CompareOrdinal` which compares UTF-16 code units). Ensures field ordering matches Python, Rust, JavaScript, TypeScript, Go, and C++ implementations.
+- **Cross-Language Parity Suite**: `TestCrossLanguageParity` asserts byte-identical output against the shared corpus in `benchmark/parity/`, whose expected files are generated from the ison-py reference. Covers all four renderings plus canonical idempotence and round-trip stability.
+
+### Fixed
+- **Culture-Sensitive Sorting (CRITICAL)**: Block and row ordering now use `StringComparer.Ordinal`. The previous `OrderBy` calls used .NET's default comparer, which is culture-sensitive and treats punctuation as ignorable — `co-op`, `co_op` and `coop` sorted differently than in every other implementation, silently breaking canonical byte-identity.
+- **Culture-Sensitive Number Handling**: Number parsing and formatting now pin `CultureInfo.InvariantCulture`, so a machine with a comma decimal separator cannot change output.
+- **Float Formatting**: Integral doubles serialize as `1.0` rather than `1`, and exponents use a lowercase `e`, matching the reference implementation's representation.
+- **ISONL Dropped Type Annotations**: `DumpsIsonl()` emitted bare field names, making an ISON → ISONL → ISON round trip lossy, and `IsonlParser` read an annotated envelope written by another implementation as fields literally named `id:int`, corrupting row keys. Annotations are now emitted and parsed.
+- **Canonical ISONL Did Not Normalize Field Order**: `DumpsCanonicalIsonl()` emitted fields in document order, so a document built from an unordered `Dictionary` produced non-deterministic canonical ISONL. Fields are now sorted and rows keyed off the first canonical column.
 
 ### Changed
 - **ISONCS Specification Updated**: Field ordering rules now explicit with UTF-8 vs Unicode divergence tests (e.g., Ａfield vs 😀field).

@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <AssemblyName>IsonParser</AssemblyName>
+    <RootNamespace>IsonParser</RootNamespace>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+    <PackageId>Ison.Parser</PackageId>
+    <Title>ISON for C# — Official Implementation</Title>
+    <Authors>Mahesh Vaikri</Authors>
+    <Company>ISON Format</Company>
+    <Copyright>Copyright (c) 2025 Mahesh Vaikri</Copyright>
+    <Description>The official C# implementation of ISON (Interchange Simple Object Notation), from the authors of the ISON format — a token-efficient data format for AI/LLM workflows.
+
+Part of the original ISON family, released and versioned together with ison-py (PyPI), ison-parser and ison-ts (npm), ison-rs (crates.io), ison-go, and ison-cpp.
+
+Full ISON and ISONL support: parsing, serialization, type inference, references, field type annotations, streaming, and JSON interop.
+
+Includes ISONCS (ISON Canonical Serialization) for byte-identical output across every implementation in the family — 'id' hoisted first, remaining fields sorted by UTF-8 byte order — verified on every release against a shared cross-language parity corpus generated from the reference implementation.
+
+Stay on this package to stay current: specification changes, fixes, edge-case hardening, hotfixes, and security patches ship here as they land in the spec — so you pick them up with a routine package update instead of tracking them yourself.</Description>
+    <PackageReleaseNotes>Changelog: https://github.com/ISON-format/ison/blob/main/ison-cs/CHANGELOG.md</PackageReleaseNotes>
+    <PackageTags>ison;isonl;isoncs;json;parser;serializer;data-format;llm;ai;agentic;token-efficient;canonical;serialization</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://www.ison.dev</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ISON-format/ison</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>ison_logo_git.png</PackageIcon>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../README.md" Pack="true" PackagePath="\" />
+    <None Include="../../images/ison_logo_git.png" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Test fixtures: copied to output for the test run, never shipped in the package. -->
+    <None Include="../../benchmark/golden_fixture_field_sort.json" CopyToOutputDirectory="PreserveNewest" Pack="false" />
+    <None Include="../../benchmark/golden_fixture_field_sort.expected.ison" CopyToOutputDirectory="PreserveNewest" Pack="false" />
+  </ItemGroup>
+
+</Project>
