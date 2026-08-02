@@ -47,9 +47,13 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
+      # Inputs are passed through env rather than interpolated into the script.
+      # `message` is free text: interpolating it directly would let an
+      # apostrophe break the script, and a crafted value run commands.
       - name: Show current state
+        env:
+          PKG: ${{ inputs.package }}
         run: |
-          PKG='${{ inputs.package }}'
           echo "Package:  $PKG"
           echo "Versions: $(npm view "$PKG" versions --json 2>/dev/null | tr -d '\n[] "')"
           CURRENT="$(npm view "$PKG" deprecated 2>/dev/null || true)"
@@ -63,15 +67,17 @@ jobs:
         if: ${{ inputs.dry_run != true }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PKG: ${{ inputs.package }}
+          UNDO: ${{ inputs.undo }}
+          MESSAGE: ${{ inputs.message }}
         run: |
           set -uo pipefail
-          PKG='${{ inputs.package }}'
 
           # An empty message is how npm clears a deprecation.
-          if [ '${{ inputs.undo }}' = 'true' ]; then
+          if [ "$UNDO" = 'true' ]; then
             MSG=''
           else
-            MSG='${{ inputs.message }}'
+            MSG="$MESSAGE"
             if [ -z "$MSG" ]; then
               echo "::error::A message is required unless undo=true"
               exit 1
@@ -80,15 +86,18 @@ jobs:
 
           # @"*" covers every published version, present and future.
           if ! npm deprecate "$PKG@*" "$MSG"; then
-            echo "::error::npm deprecate failed. The NPM_TOKEN must be an automation token \
+            echo "::error::npm deprecate failed. NPM_TOKEN must be an automation token \
           belonging to an account with publish rights on $PKG (a 2FA-required publish token \
           will not work unattended)."
             exit 1
           fi
 
       - name: Verify
+        env:
+          PKG: ${{ inputs.package }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          UNDO: ${{ inputs.undo }}
         run: |
-          PKG='${{ inputs.package }}'
           # npm's CDN can lag a few seconds behind a write.
           sleep 10
           RESULT="$(npm view "$PKG" deprecated 2>/dev/null || true)"
@@ -98,11 +107,11 @@ jobs:
             echo ""
             echo "| Package | Dry run | Deprecation notice |"
             echo "|---|---|---|"
-            echo "| \`$PKG\` | ${{ inputs.dry_run }} | ${RESULT:-（none）} |"
+            echo "| \`$PKG\` | $DRY_RUN | ${RESULT:-(none)} |"
             echo ""
-            if [ "${{ inputs.dry_run }}" = "true" ]; then
+            if [ "$DRY_RUN" = 'true' ]; then
               echo "Dry run — nothing was changed."
-            elif [ '${{ inputs.undo }}' = 'true' ]; then
+            elif [ "$UNDO" = 'true' ]; then
               echo "Deprecation cleared."
             else
               echo "Deprecated. \`npm install $PKG\` now prints the notice."

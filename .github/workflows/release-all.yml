@@ -48,10 +48,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # `version` is free text, so it goes through env rather than being
+      # interpolated into the script.
       - name: Validate umbrella tag format
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
-            echo "::error::Invalid version format: ${{ inputs.version }} (expected X.Y.Z or X.Y.Z-prerelease)"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::Invalid version format: $VERSION (expected X.Y.Z or X.Y.Z-prerelease)"
             exit 1
           fi
 
@@ -378,11 +382,13 @@ jobs:
     if: always()
     steps:
       - name: Summary
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
           {
             echo "## Release Summary"
             echo ""
-            echo "**Umbrella tag:** v${{ inputs.version }}"
+            echo "**Umbrella tag:** v$VERSION"
             echo "**Dry run:** ${{ inputs.dry_run }}"
             echo ""
             echo "| Package | Preflight action |"
