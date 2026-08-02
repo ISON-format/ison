@@ -279,7 +279,7 @@ jobs:
             cargo publish
           fi
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   # ===========================================
   # PHASE 3: Publish Dependent Packages
@@ -307,7 +307,7 @@ jobs:
             cargo publish
           fi
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   # ===========================================
   # PHASE 4: Create Release

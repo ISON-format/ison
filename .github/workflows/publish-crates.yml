@@ -45,7 +45,7 @@ jobs:
         if: ${{ inputs.dry_run != true }}
         working-directory: ison-rust
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish
 
       - name: Dry run
@@ -84,7 +84,7 @@ jobs:
         if: ${{ inputs.dry_run != true }}
         working-directory: isonantic-rust
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish
 
       - name: Dry run
