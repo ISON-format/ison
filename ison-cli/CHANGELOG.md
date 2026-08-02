@@ -13,7 +13,7 @@ All notable changes to the ISON command-line tool will be documented in this fil
 - **Field Sorting Display**: When using `--canonical`, fields are displayed in deterministic order: `id` field first, then alphabetically by UTF-8 bytes.
 
 ### Changed
-- **Updated to ison-py 1.0.1**: Includes ISONCS field sorting implementation with UTF-8 byte comparison.
+- **Updated to ison-py 1.0.4**: Includes ISONCS field sorting implementation with UTF-8 byte comparison.
 
 ## [1.0.0] - 2025-12-25
 

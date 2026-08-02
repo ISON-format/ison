@@ -2,7 +2,7 @@
 
 All notable changes to the ISON language support extension for VS Code will be documented in this file.
 
-## [1.0.1] - 2026-08-01
+## [1.0.3] - 2026-08-01
 
 ### Added
 - **ISONCS Syntax Support**: Syntax highlighting now recognizes canonical ISON format with properly sorted fields and rows.

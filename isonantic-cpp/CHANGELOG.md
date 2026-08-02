@@ -10,7 +10,7 @@ All notable changes to the isonantic C++ validation library will be documented i
 - **UTF-8 Safeguards**: Field ordering uses unsigned char comparison to avoid x86 signed char trap.
 
 ### Changed
-- **Updated to ison-cpp 1.0.4**: Includes ISONCS field sorting implementation with unsigned char safeguards.
+- **Updated to ison-cpp 1.0.2**: Includes ISONCS field sorting implementation with unsigned char safeguards.
 - **Validation Rules**: Enhanced to support canonical form validation with byte-level UTF-8 ordering checks.
 
 ## [1.0.0] - 2025-12-25
