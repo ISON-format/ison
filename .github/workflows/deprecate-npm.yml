@@ -1,0 +1,112 @@
+name: Deprecate NPM Package
+
+# Sets (or clears) the npm deprecation notice on a package, using the existing
+# NPM_TOKEN secret so no local `npm login` is needed.
+#
+# A README notice only reaches people who visit the package page. The registry
+# deprecation flag is what prints a warning on every `npm install`, which is
+# the part that actually reaches consumers.
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Package to deprecate'
+        required: true
+        default: 'isonantic-ts'
+        type: choice
+        options:
+          - isonantic-ts
+          - ison-parser
+          - ison-ts
+      message:
+        description: 'Deprecation message (leave blank with undo=true to clear it)'
+        required: false
+        default: 'Merged into ison-ts. Use ison-ts/validation instead: npm install ison-ts'
+        type: string
+      undo:
+        description: 'Remove the deprecation instead of setting it'
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: 'Dry run (show current state, change nothing)'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  deprecate:
+    name: Deprecate ${{ inputs.package }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Show current state
+        run: |
+          PKG='${{ inputs.package }}'
+          echo "Package:  $PKG"
+          echo "Versions: $(npm view "$PKG" versions --json 2>/dev/null | tr -d '\n[] "')"
+          CURRENT="$(npm view "$PKG" deprecated 2>/dev/null || true)"
+          if [ -n "$CURRENT" ]; then
+            echo "Currently deprecated: $CURRENT"
+          else
+            echo "Currently deprecated: (no)"
+          fi
+
+      - name: Apply deprecation
+        if: ${{ inputs.dry_run != true }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -uo pipefail
+          PKG='${{ inputs.package }}'
+
+          # An empty message is how npm clears a deprecation.
+          if [ '${{ inputs.undo }}' = 'true' ]; then
+            MSG=''
+          else
+            MSG='${{ inputs.message }}'
+            if [ -z "$MSG" ]; then
+              echo "::error::A message is required unless undo=true"
+              exit 1
+            fi
+          fi
+
+          # @"*" covers every published version, present and future.
+          if ! npm deprecate "$PKG@*" "$MSG"; then
+            echo "::error::npm deprecate failed. The NPM_TOKEN must be an automation token \
+          belonging to an account with publish rights on $PKG (a 2FA-required publish token \
+          will not work unattended)."
+            exit 1
+          fi
+
+      - name: Verify
+        run: |
+          PKG='${{ inputs.package }}'
+          # npm's CDN can lag a few seconds behind a write.
+          sleep 10
+          RESULT="$(npm view "$PKG" deprecated 2>/dev/null || true)"
+
+          {
+            echo "## npm deprecation"
+            echo ""
+            echo "| Package | Dry run | Deprecation notice |"
+            echo "|---|---|---|"
+            echo "| \`$PKG\` | ${{ inputs.dry_run }} | ${RESULT:-（none）} |"
+            echo ""
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "Dry run — nothing was changed."
+            elif [ '${{ inputs.undo }}' = 'true' ]; then
+              echo "Deprecation cleared."
+            else
+              echo "Deprecated. \`npm install $PKG\` now prints the notice."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "deprecated field is now: ${RESULT:-(none)}"
