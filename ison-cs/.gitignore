@@ -17,6 +17,11 @@ bld/
 [Ll]og/
 [Ll]ogs/
 
+# The root .gitignore excludes *.sln (it targets CMake-generated solutions).
+# ison-cs.sln is hand-written source: without it `dotnet restore` in this
+# directory finds no project or solution and CI fails.
+!ison-cs.sln
+
 # Visual Studio cache/options
 .vs/
 
