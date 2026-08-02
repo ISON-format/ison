@@ -362,6 +362,7 @@ namespace IsonParser
                 string.Equals(s, "true", StringComparison.Ordinal) ||
                 string.Equals(s, "false", StringComparison.Ordinal) ||
                 string.Equals(s, "null", StringComparison.Ordinal) ||
+                string.Equals(s, "~", StringComparison.Ordinal) ||
                 s.StartsWith(":", StringComparison.Ordinal) ||
                 LooksLikeNumber(s) ||
                 LooksLikeBlockHeader(s);

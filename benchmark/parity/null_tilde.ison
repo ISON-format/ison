@@ -1,0 +1,5 @@
+table.t
+id tilde_null word_null literal_tilde
+1 ~ null "~"
+2 null ~ "~"
+3 a b c

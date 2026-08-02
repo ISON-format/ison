@@ -26,6 +26,8 @@ These were found by a new shared parity corpus (`benchmark/parity/`) whose expec
 
 - **Parity Test**: `tests/test_parity.cpp` verifies all four renderings plus canonical idempotence against the shared corpus (C++11, reads `cases.txt`).
 
+- **Literal String `"~"` Lost on Round Trip**: `~` parsed as null but the string `"~"` was never quoted on output, so it serialized bare and came back as null. Now quoted.
+
 
 ## [1.0.1] - 2026-07-13
 

@@ -19,6 +19,8 @@ These were found by a new shared parity corpus (`benchmark/parity/`) whose expec
 - **ISONL Dropped Type Annotations**: `dumps_isonl()` emitted bare field names, making an ISON → ISONL → ISON round trip lossy, and `ISONLParser` read an annotated envelope written by another implementation as fields literally named `id:int`, silently corrupting row keys. Annotations are now emitted and parsed.
 - **Canonical ISONL Did Not Normalize Field Order**: `ISONLSerializer.dumps_canonical()` emitted fields in document order while canonical ISON sorted them. ISONCS requires field insertion order to be normalized in canonical form, so a document built from an unordered map produced non-deterministic canonical ISONL.
 
+- **`~` Null Spelling Only Half-Supported**: `README.md` documents `~ or null for null values`, but a bare `~` parsed as the *string* `"~"` — so the README's own example misparsed. Both spellings now parse as null, and the literal string `"~"` is quoted on output so it still round-trips. Emission stays `null`, since older published releases cannot read `~`.
+
 
 ## [1.0.3] - 2026-07-13
 

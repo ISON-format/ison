@@ -363,8 +363,9 @@ class TypeInferrer:
         if token == 'false':
             return False
 
-        # Null
-        if token == 'null':
+        # Null. Both spellings are spec'd (README: "~ or null for null
+        # values"); '~' is the token-cheap form.
+        if token == 'null' or token == '~':
             return None
 
         # Integer
@@ -896,7 +897,7 @@ class Serializer:
             '\r' in s or
             '\\' in s or
             s.startswith('#') or
-            s in ('true', 'false', 'null') or
+            s in ('true', 'false', 'null', '~') or
             s.startswith(':') or
             cls._looks_like_number(s) or
             cls._looks_like_block_header(s)
@@ -1656,7 +1657,7 @@ class ISONLSerializer:
             '\\' in s or
             '|' in s or
             s.startswith('#') or
-            s in ('true', 'false', 'null') or
+            s in ('true', 'false', 'null', '~') or
             s.startswith(':')
         )
 

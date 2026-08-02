@@ -166,7 +166,13 @@ namespace IsonParser
 
             if (string.Equals(token, "true", StringComparison.Ordinal)) return true;
             if (string.Equals(token, "false", StringComparison.Ordinal)) return false;
-            if (string.Equals(token, "null", StringComparison.Ordinal)) return null;
+            // Both spellings are spec'd (README: "~ or null for null values");
+            // '~' is the token-cheap form.
+            if (string.Equals(token, "null", StringComparison.Ordinal) ||
+                string.Equals(token, "~", StringComparison.Ordinal))
+            {
+                return null;
+            }
 
             if (IsIntegerLiteral(token))
             {

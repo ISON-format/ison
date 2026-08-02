@@ -779,6 +779,7 @@ class Serializer {
       s === "true" ||
       s === "false" ||
       s === "null" ||
+      s === "~" ||
       s.startsWith(":") ||
       /^-?\d+(\.\d+)?$/.test(s);
 
@@ -1144,6 +1145,7 @@ class ISONLSerializer {
       s === "true" ||
       s === "false" ||
       s === "null" ||
+      s === "~" ||
       s.startsWith(":") ||
       /^-?\d+(\.\d+)?$/.test(s);
 

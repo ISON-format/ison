@@ -14,6 +14,8 @@ These were found by a new shared parity corpus (`benchmark/parity/`) whose expec
 - **`dumps()` Defaulted to Aligned Output**: `dumps(doc)` defaulted to `alignColumns = true` while every other implementation defaults to `false`, contradicting the v1.0.1 changelog entry and emitting padded, token-inefficient output by default. Now defaults to `false`; pass `true` explicitly for aligned output.
 - **ISONL Dropped Type Annotations**: `dumpsISONL()` emitted bare field names, making an ISON → ISONL → ISON round trip lossy, and `ISONLParser` read an annotated envelope as fields literally named `id:int`, corrupting row keys. Annotations are now emitted and parsed.
 
+- **`~` Null Spelling Only Half-Supported**: `README.md` documents `~ or null for null values`, but a bare `~` parsed as the *string* `"~"` — so the README's own example misparsed. Both spellings now parse as null, and the literal string `"~"` is quoted on output so it still round-trips. Emission stays `null`, since older published releases cannot read `~`.
+
 
 ## [1.0.2] - 2026-07-13
 

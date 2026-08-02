@@ -5,6 +5,7 @@ header_lookalike
 missing_trailing
 multi_block
 null_keys
+null_tilde
 numeric_keys
 ordinal_keys
 quoting

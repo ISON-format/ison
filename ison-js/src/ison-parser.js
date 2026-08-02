@@ -361,7 +361,8 @@
             }
 
             // Null
-            if (token === 'null') {
+            // Both spellings are spec'd; '~' is the token-cheap form.
+            if (token === 'null' || token === '~') {
                 return null;
             }
 
@@ -773,6 +774,7 @@
                 s === 'true' ||
                 s === 'false' ||
                 s === 'null' ||
+                s === '~' ||
                 s.startsWith(':') ||
                 Serializer._looksLikeNumber(s) ||
                 Serializer._looksLikeBlockHeader(s)
@@ -1639,6 +1641,7 @@
                 s === 'true' ||
                 s === 'false' ||
                 s === 'null' ||
+                s === '~' ||
                 s.startsWith(':') ||
                 (!isNaN(parseFloat(s)) && isFinite(s))
             );

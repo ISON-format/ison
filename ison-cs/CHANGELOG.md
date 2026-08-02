@@ -22,6 +22,7 @@ All notable changes to this project will be documented in this file.
 - **Float Formatting**: Integral doubles serialize as `1.0` rather than `1`, and exponents use a lowercase `e`, matching the reference implementation's representation.
 - **ISONL Dropped Type Annotations**: `DumpsIsonl()` emitted bare field names, making an ISON → ISONL → ISON round trip lossy, and `IsonlParser` read an annotated envelope written by another implementation as fields literally named `id:int`, corrupting row keys. Annotations are now emitted and parsed.
 - **Canonical ISONL Did Not Normalize Field Order**: `DumpsCanonicalIsonl()` emitted fields in document order, so a document built from an unordered `Dictionary` produced non-deterministic canonical ISONL. Fields are now sorted and rows keyed off the first canonical column.
+- **`~` Null Spelling Only Half-Supported**: `README.md` documents `~ or null for null values`, but a bare `~` parsed as the *string* `"~"`. Both spellings now parse as null, and the literal string `"~"` is quoted on output so it still round-trips. Emission stays `null`, since older published releases cannot read `~`.
 
 ### Changed
 - **ISONCS Specification Updated**: Field ordering rules now explicit with UTF-8 vs Unicode divergence tests (e.g., Ａfield vs 😀field).

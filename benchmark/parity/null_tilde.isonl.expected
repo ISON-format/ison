@@ -1,0 +1,3 @@
+table.t|id tilde_null word_null literal_tilde|1 null null "~"
+table.t|id tilde_null word_null literal_tilde|2 null null "~"
+table.t|id tilde_null word_null literal_tilde|3 a b c

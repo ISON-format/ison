@@ -1096,7 +1096,7 @@ private:
         // '\r' and '\\' would be emitted raw and corrupt on re-parse; a
         // leading '#' would turn the line into a comment (or an inline
         // comment) and silently lose data.
-        bool needs_quote = (s == "true" || s == "false" || s == "null" ||
+        bool needs_quote = (s == "true" || s == "false" || s == "null" || s == "~" ||
                             s[0] == ':' || s[0] == '#');
 
         if (!needs_quote) {
@@ -1657,7 +1657,7 @@ private:
 
         // A leading '#' would start an inline comment in the values section
         // and silently drop the rest of the row on re-parse
-        bool needs_quote = (s == "true" || s == "false" || s == "null" ||
+        bool needs_quote = (s == "true" || s == "false" || s == "null" || s == "~" ||
                            s[0] == ':' || s[0] == '#' ||
                            s.find(' ') != std::string::npos ||
                            s.find('\t') != std::string::npos ||

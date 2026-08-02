@@ -14,6 +14,8 @@ These were found by a new shared parity corpus (`benchmark/parity/`) whose expec
 - **Locale-Sensitive Canonical Ordering (CRITICAL)**: Canonical block and row sorting used `String.prototype.localeCompare`, which is culture-aware and treats punctuation as ignorable — ordering `co_op` before `co-op` where every other implementation orders `co-op` first — and is machine-locale dependent, so identical input could produce different bytes on different machines. All four sites now use ordinal comparison.
 - **Missing Field Sorting (CRITICAL)**: `dumpsCanonical()` and `dumpsCanonicalIsonl()` emitted fields in document order, so canonical output diverged from every other implementation whenever input field order differed. Fields are now sorted per ISONCS — `id` first, then by UTF-8 byte order via `TextEncoder` (not UTF-16 code units, which reverse non-BMP field names such as `Ａfield` vs `😀field`). Row ordering now keys off the first canonical column rather than the first input column.
 
+- **Literal String `"~"` Lost on Round Trip**: `~` parsed as null but the string `"~"` was never quoted on output, so it serialized bare and came back as null. Now quoted.
+
 
 ## [1.0.2] - 2026-07-13
 

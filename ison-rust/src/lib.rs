@@ -924,6 +924,8 @@ impl Serializer {
             || s == "true"
             || s == "false"
             || s == "null"
+        || s == "~"
+            || s == "~"
             || s.starts_with('#')
             || s.starts_with(':')
             || s.parse::<f64>().is_ok();
@@ -1196,6 +1198,8 @@ impl CanonicalSerializer {
             || s == "true"
             || s == "false"
             || s == "null"
+        || s == "~"
+            || s == "~"
             || s.starts_with('#')
             || s.starts_with(':')
             || s.parse::<f64>().is_ok();
@@ -1231,6 +1235,8 @@ impl CanonicalSerializer {
             || s == "true"
             || s == "false"
             || s == "null"
+        || s == "~"
+            || s == "~"
             || s.starts_with('#')
             || s.starts_with(':')
             || s.parse::<f64>().is_ok();
@@ -1395,6 +1401,7 @@ fn isonl_quote_if_needed(s: &str) -> String {
         || s == "true"
         || s == "false"
         || s == "null"
+        || s == "~"
         || s.starts_with('#')
         || s.starts_with(':')
         || s.parse::<f64>().is_ok();

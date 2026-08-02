@@ -41,6 +41,7 @@ implementation, with LF line endings and UTF-8 encoding.
 | `ordinal_keys` | Ordinal vs culture-sensitive ordering (`co-op`/`co_op`/`coop`) |
 | `missing_trailing` | Missing trailing values become null |
 | `header_lookalike` | Values shaped like `kind.name` must be quoted |
+| `null_tilde` | Both spec'd null spellings (`~` and `null`) parse as null; the literal string `"~"` stays quoted |
 
 ## Regenerating
 
@@ -122,3 +123,16 @@ passes byte-for-byte everywhere.
 8. **Trailing newlines (ison-go).** `Dumps`, `DumpsISONL` and
    `DumpsCanonicalISONL` appended a trailing newline while `DumpsCanonical` did
    not, and no other implementation does. Now consistent.
+
+9. **The `~` null spelling was only half-supported.** `README.md` documents
+   `~ or null for null values`, but ison-py, ison-js and ison-cs parsed a bare
+   `~` as the *string* `"~"` — so the README's own example misparsed in the
+   reference implementation. All six now accept both spellings.
+
+10. **The literal string `"~"` did not survive a round trip (ison-ts).**
+    ison-ts parsed `~` as null but never quoted the string `"~"` on output, so
+    it serialized bare and came back as null. Every implementation that accepts
+    `~` as null now quotes the literal string. `null` remains what gets
+    emitted, since older published versions of ison-py and ison-js cannot read
+    `~`; emission can move to the shorter form once those releases have
+    propagated.
