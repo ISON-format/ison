@@ -958,24 +958,44 @@
                 return block.rows;
             }
 
-            const keyField = sortedFields[0];
+            // Compare on EVERY canonical column, not just the first. Keying on
+            // the first column alone leaves ties resolved by input order, so
+            // the same logical data serializes to different bytes depending on
+            // how the rows were built -- which defeats content addressing and
+            // prefix stability.
+            //
+            // Values compare as UTF-8 bytes, matching _sortFieldsCanonical.
+            // JavaScript string comparison is UTF-16 code units, which orders
+            // astral characters differently: "Ａ" (U+FF21) encodes to EF BF A1
+            // and must precede "😀" (U+1F600) at F0 9F 98 80, but in UTF-16 the
+            // emoji's lead surrogate D83D sorts below FF21.
+            const encoder = new TextEncoder();
+
+            const compareBytes = (a, b) => {
+                const min = Math.min(a.length, b.length);
+                for (let i = 0; i < min; i++) {
+                    if (a[i] !== b[i]) return a[i] - b[i];
+                }
+                return a.length - b.length;
+            };
 
             const sortedRows = [...block.rows].sort((rowA, rowB) => {
-                const keyValueA = Serializer._getNestedValue(rowA, keyField);
-                const keyValueB = Serializer._getNestedValue(rowB, keyField);
+                for (const field of sortedFields) {
+                    const va = Serializer._getNestedValue(rowA, field);
+                    const vb = Serializer._getNestedValue(rowB, field);
 
-                // Rows with null key sort to the end
-                const aIsNull = keyValueA === null || keyValueA === undefined;
-                const bIsNull = keyValueB === null || keyValueB === undefined;
+                    // Nulls sort last at EVERY position, not only the key column.
+                    const aIsNull = va === null || va === undefined;
+                    const bIsNull = vb === null || vb === undefined;
+                    if (aIsNull && bIsNull) continue;
+                    if (aIsNull) return 1;
+                    if (bIsNull) return -1;
 
-                if (aIsNull && bIsNull) return 0;
-                if (aIsNull) return 1;  // a goes after b
-                if (bIsNull) return -1; // b goes after a
-
-                // Ordinal (lexicographic) string comparison
-                const strA = String(keyValueA);
-                const strB = String(keyValueB);
-                return strA < strB ? -1 : strA > strB ? 1 : 0;
+                    const cmp = compareBytes(encoder.encode(String(va)),
+                                             encoder.encode(String(vb)));
+                    if (cmp !== 0) return cmp;
+                }
+                return 0;
             });
 
             return sortedRows;
@@ -1733,30 +1753,13 @@
                 const sortedFields = ISONLSerializer._sortFieldsCanonical(block.fields);
                 const fieldsStr = ISONLSerializer._fieldsHeader(block, sortedFields);
 
-                // Sort rows by first column value (using canonical field order)
-                let sortedRows;
-                if (sortedFields && sortedFields.length > 0) {
-                    const keyField = sortedFields[0];
-                    sortedRows = [...block.rows].sort((rowA, rowB) => {
-                        const keyValueA = rowA[keyField];
-                        const keyValueB = rowB[keyField];
-
-                        // Rows with null key sort to the end
-                        const aIsNull = keyValueA === null || keyValueA === undefined;
-                        const bIsNull = keyValueB === null || keyValueB === undefined;
-
-                        if (aIsNull && bIsNull) return 0;
-                        if (aIsNull) return 1;  // a goes after b
-                        if (bIsNull) return -1; // b goes after a
-
-                        // Ordinal (lexicographic) string comparison
-                        const strA = String(keyValueA);
-                        const strB = String(keyValueB);
-                        return strA < strB ? -1 : strA > strB ? 1 : 0;
-                    });
-                } else {
-                    sortedRows = block.rows;
-                }
+                // Sort rows on the full canonical tuple, matching canonical
+                // ISON. This shares Serializer._sortRowsByKeyCanonical rather
+                // than carrying a second copy -- the duplicate is how the
+                // first-column-only sort survived here after ISON was fixed.
+                const sortedRows = (sortedFields && sortedFields.length > 0)
+                    ? Serializer._sortRowsByKeyCanonical(block, sortedFields)
+                    : block.rows;
 
                 for (const row of sortedRows) {
                     const values = [];

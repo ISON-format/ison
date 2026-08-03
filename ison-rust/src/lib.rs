@@ -995,37 +995,49 @@ impl CanonicalSerializer {
         [id_fields, other_fields].concat()
     }
 
+    /// Order rows on the FULL canonical field tuple.
+    ///
+    /// Keying on the first column alone left ties resolved by input order, so
+    /// the same logical data serialized to different bytes depending on how the
+    /// rows were built -- which defeats content addressing and prefix
+    /// stability.
+    ///
+    /// Values compare as UTF-8 bytes via `as_bytes()`, matching
+    /// `sort_fields_canonical`. Rust `String` ordering is already by UTF-8
+    /// bytes, so this agrees with `cmp` here, but stating it explicitly keeps
+    /// both sorts expressed in the same terms as every other implementation.
     fn sort_rows_by_key_canonical(&self, block: &Block, sorted_fields: &[String]) -> Vec<Row> {
-        // Sort rows ordinal-string by first column value (key), using canonical field order.
-        // The row key must be built from the *canonical* field order, not the input
-        // order, or row sorting depends on field order (identical bug one level up).
-
         if block.rows.is_empty() || sorted_fields.is_empty() {
             return block.rows.clone();
         }
 
         let mut sorted_rows = block.rows.clone();
-        let key_field = &sorted_fields[0];
 
         sorted_rows.sort_by(|a, b| {
-            let val_a = a.get(key_field);
-            let val_b = b.get(key_field);
+            for field in sorted_fields {
+                let val_a = a.get(field);
+                let val_b = b.get(field);
 
-            // Null values (missing or Value::Null) sort to the end
-            let is_null_a = val_a.is_none() || matches!(val_a, Some(Value::Null));
-            let is_null_b = val_b.is_none() || matches!(val_b, Some(Value::Null));
+                // Nulls sort last at EVERY position, not only the key column.
+                let is_null_a = val_a.is_none() || matches!(val_a, Some(Value::Null));
+                let is_null_b = val_b.is_none() || matches!(val_b, Some(Value::Null));
 
-            match (is_null_a, is_null_b) {
-                (true, true) => std::cmp::Ordering::Equal,
-                (true, false) => std::cmp::Ordering::Greater,
-                (false, true) => std::cmp::Ordering::Less,
-                (false, false) => {
-                    // Both are non-null, compare as strings
-                    let str_a = self.value_to_string(val_a.unwrap());
-                    let str_b = self.value_to_string(val_b.unwrap());
-                    str_a.cmp(&str_b)
+                let ord = match (is_null_a, is_null_b) {
+                    (true, true) => continue,
+                    (true, false) => std::cmp::Ordering::Greater,
+                    (false, true) => std::cmp::Ordering::Less,
+                    (false, false) => {
+                        let str_a = self.value_to_string(val_a.unwrap());
+                        let str_b = self.value_to_string(val_b.unwrap());
+                        str_a.as_bytes().cmp(str_b.as_bytes())
+                    }
+                };
+
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
                 }
             }
+            std::cmp::Ordering::Equal
         });
 
         sorted_rows

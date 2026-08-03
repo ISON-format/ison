@@ -646,20 +646,48 @@ function fieldsHeader(block: Block, fieldNames: string[]): string {
 }
 
 /**
- * Sort rows ordinal-string by the given key field; null keys sort last.
+ * Sort rows on the full canonical field tuple; null values sort last at every
+ * position.
+ *
+ * Keying on the first column alone leaves ties resolved by input order, so the
+ * same logical data serializes to different bytes depending on how the rows
+ * were built -- which defeats content addressing and prefix stability.
+ *
+ * Values compare as UTF-8 bytes, matching sortFieldsCanonical. TypeScript
+ * string comparison is UTF-16 code units, which orders astral characters
+ * differently: "Ａ" (U+FF21) encodes to EF BF A1 and must precede "😀"
+ * (U+1F600) at F0 9F 98 80, but in UTF-16 the emoji's lead surrogate D83D
+ * sorts below FF21.
  */
-function sortRowsByKeyField(rows: Row[], keyField: string | undefined): Row[] {
-  if (!rows || rows.length === 0 || !keyField) return rows;
+function sortRowsCanonical(rows: Row[], sortedFields: string[]): Row[] {
+  if (!rows || rows.length === 0 || !sortedFields || sortedFields.length === 0) {
+    return rows;
+  }
 
-  return [...rows].sort((a, b) => {
-    const keyA = a[keyField];
-    const keyB = b[keyField];
-    const aNull = keyA === null || keyA === undefined;
-    const bNull = keyB === null || keyB === undefined;
-    if (aNull && bNull) return 0;
-    if (aNull) return 1;
-    if (bNull) return -1;
-    return compareOrdinal(String(keyA), String(keyB));
+  const encoder = new TextEncoder();
+
+  const compareBytes = (a: Uint8Array, b: Uint8Array): number => {
+    const min = Math.min(a.length, b.length);
+    for (let i = 0; i < min; i++) {
+      if (a[i] !== b[i]) return a[i] - b[i];
+    }
+    return a.length - b.length;
+  };
+
+  return [...rows].sort((rowA, rowB) => {
+    for (const field of sortedFields) {
+      const va = rowA[field];
+      const vb = rowB[field];
+      const aNull = va === null || va === undefined;
+      const bNull = vb === null || vb === undefined;
+      if (aNull && bNull) continue;
+      if (aNull) return 1;
+      if (bNull) return -1;
+
+      const cmp = compareBytes(encoder.encode(String(va)), encoder.encode(String(vb)));
+      if (cmp !== 0) return cmp;
+    }
+    return 0;
   });
 }
 
@@ -842,7 +870,7 @@ class Serializer {
 
     // Sort rows ordinal-string by the first *canonical* column. Using the
     // input order here would make row order depend on field order.
-    const sortedRows = sortRowsByKeyField(block.rows, sortedFields[0]);
+    const sortedRows = sortRowsCanonical(block.rows, sortedFields);
 
     // Data rows (single-space delimiter, no alignment)
     for (const row of sortedRows) {
@@ -1187,7 +1215,7 @@ class ISONLSerializer {
       const fieldsStr = fieldsHeader(block, sortedFields);
 
       // Sort rows ordinal-string by the first canonical column
-      const sortedRows = sortRowsByKeyField(block.rows, sortedFields[0]);
+      const sortedRows = sortRowsCanonical(block.rows, sortedFields);
 
       for (const row of sortedRows) {
         const values = sortedFields.map(f => this.serializeValue(row[f])).join(" ");

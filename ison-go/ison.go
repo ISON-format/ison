@@ -972,38 +972,48 @@ func sortRowsByKey(block *Block) []Row {
 // using the canonical (sorted) field order. The row key must be built from the
 // canonical field order, not the input order, or row sorting depends on field order.
 // Rows with null in the key column sort to the end.
+// sortRowsByKeyCanonical orders rows on the FULL canonical field tuple.
+//
+// Keying on the first column alone left ties resolved by input order, so the
+// same logical data serialized to different bytes depending on how the rows
+// were built -- which defeats content addressing and prefix stability.
+//
+// Values compare as UTF-8 bytes via bytes.Compare, matching
+// sortFieldsCanonical. Go strings are already UTF-8, so `<` and bytes.Compare
+// agree here, but the explicit encoding keeps the two sorts stated in the same
+// terms as every other implementation.
 func sortRowsByKeyCanonical(block *Block, sortedFields []FieldInfo) []Row {
 	if len(block.Rows) == 0 || len(sortedFields) == 0 {
 		return block.Rows
 	}
 
-	keyFieldName := sortedFields[0].Name
 	rows := make([]Row, len(block.Rows))
 	copy(rows, block.Rows)
 
 	sort.SliceStable(rows, func(i, j int) bool {
-		keyI := rows[i][keyFieldName]
-		keyJ := rows[j][keyFieldName]
+		for _, field := range sortedFields {
+			vi := rows[i][field.Name]
+			vj := rows[j][field.Name]
 
-		// Extract sort values
-		iIsNull := keyI.Type == TypeNull
-		jIsNull := keyJ.Type == TypeNull
-		iVal := valueToString(keyI)
-		jVal := valueToString(keyJ)
+			// Nulls sort last at EVERY position, not only the key column.
+			iIsNull := vi.Type == TypeNull
+			jIsNull := vj.Type == TypeNull
+			if iIsNull && jIsNull {
+				continue
+			}
+			if iIsNull {
+				return false
+			}
+			if jIsNull {
+				return true
+			}
 
-		// Rows with null key sort to the end
-		if iIsNull && jIsNull {
-			return false // both null, maintain stable sort
+			cmp := bytes.Compare([]byte(valueToString(vi)), []byte(valueToString(vj)))
+			if cmp != 0 {
+				return cmp < 0
+			}
 		}
-		if iIsNull {
-			return false // i is null, goes after j
-		}
-		if jIsNull {
-			return true // j is null, i goes before j
-		}
-
-		// Both have values: ordinal-string comparison
-		return iVal < jVal
+		return false
 	})
 
 	return rows

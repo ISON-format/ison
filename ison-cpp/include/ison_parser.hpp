@@ -865,6 +865,48 @@ private:
      * Fields are sorted in canonical order: 'id' first (if present), then
      * other fields by UTF-8 byte comparison.
      */
+public:
+    // Order two rows on the FULL canonical field tuple.
+    //
+    // Keying on the first column alone left ties resolved by input order, so
+    // the same logical data serialized to different bytes depending on how the
+    // rows were built -- which defeats content addressing and prefix stability.
+    //
+    // Values compare as UTF-8 bytes with an unsigned char cast, matching the
+    // field sort. On x86 `char` is signed, so a plain std::string comparison
+    // orders bytes >= 0x80 as negative and reverses non-ASCII values.
+    // Nulls sort last at every position, not only the key column.
+    static bool row_less_canonical(const Row* a, const Row* b,
+                                   const std::vector<std::string>& sorted_fields) {
+        for (size_t f = 0; f < sorted_fields.size(); ++f) {
+            const std::string& field = sorted_fields[f];
+            Row::const_iterator it_a = a->find(field);
+            Row::const_iterator it_b = b->find(field);
+
+            Value val_a = (it_a != a->end()) ? it_a->second : Value(nullptr);
+            Value val_b = (it_b != b->end()) ? it_b->second : Value(nullptr);
+
+            bool a_null = val_a.is_null();
+            bool b_null = val_b.is_null();
+            if (a_null && b_null) continue;
+            if (a_null) return false;
+            if (b_null) return true;
+
+            const std::string sa = value_to_sort_string(val_a);
+            const std::string sb = value_to_sort_string(val_b);
+
+            const size_t n = (sa.size() < sb.size()) ? sa.size() : sb.size();
+            for (size_t i = 0; i < n; ++i) {
+                unsigned char ca = static_cast<unsigned char>(sa[i]);
+                unsigned char cb = static_cast<unsigned char>(sb[i]);
+                if (ca != cb) return ca < cb;
+            }
+            if (sa.size() != sb.size()) return sa.size() < sb.size();
+        }
+        return false;
+    }
+
+private:
     static std::string serialize_block_canonical(const Block& block) {
         std::vector<std::string> lines;
         lines.push_back(block.kind + "." + block.name);
@@ -902,28 +944,10 @@ private:
         }
 
         if (!sorted_fields.empty()) {
-            const std::string& key_field = sorted_fields[0];
-            std::sort(sorted_rows.begin(), sorted_rows.end(),
-                      [&key_field](const Row* a, const Row* b) {
-                          Row::const_iterator it_a = a->find(key_field);
-                          Row::const_iterator it_b = b->find(key_field);
-
-                          Value val_a = (it_a != a->end()) ? it_a->second : Value(nullptr);
-                          Value val_b = (it_b != b->end()) ? it_b->second : Value(nullptr);
-
-                          // Rows with null key sort to the end
-                          bool a_null = val_a.is_null();
-                          bool b_null = val_b.is_null();
-
-                          if (a_null && b_null) return false;  // Both null, maintain order
-                          if (a_null) return false;            // a is null, b comes first
-                          if (b_null) return true;             // b is null, a comes first
-
-                          // Both have values, ordinal-string comparison
-                          std::string str_a = value_to_sort_string(val_a);
-                          std::string str_b = value_to_sort_string(val_b);
-                          return str_a < str_b;
-                      });
+            std::stable_sort(sorted_rows.begin(), sorted_rows.end(),
+                             [&sorted_fields](const Row* a, const Row* b) {
+                                 return row_less_canonical(a, b, sorted_fields);
+                             });
         }
 
         // Data rows (no alignment, single-space delimiter)
@@ -1486,29 +1510,14 @@ public:
                 sorted_rows.push_back(&block.rows[i]);
             }
 
+            // Share the ISON comparator rather than carrying a second copy --
+            // the duplicate is how a first-column-only sort survives here after
+            // canonical ISON is fixed.
             if (!sorted_fields.empty()) {
-                const std::string& key_field = sorted_fields[0];
-                std::sort(sorted_rows.begin(), sorted_rows.end(),
-                          [&key_field](const Row* a, const Row* b) {
-                              Row::const_iterator it_a = a->find(key_field);
-                              Row::const_iterator it_b = b->find(key_field);
-
-                              Value val_a = (it_a != a->end()) ? it_a->second : Value(nullptr);
-                              Value val_b = (it_b != b->end()) ? it_b->second : Value(nullptr);
-
-                              // Rows with null key sort to the end
-                              bool a_null = val_a.is_null();
-                              bool b_null = val_b.is_null();
-
-                              if (a_null && b_null) return false;  // Both null, maintain order
-                              if (a_null) return false;            // a is null, b comes first
-                              if (b_null) return true;             // b is null, a comes first
-
-                              // Both have values, ordinal-string comparison
-                              std::string str_a = value_to_sort_string(val_a);
-                              std::string str_b = value_to_sort_string(val_b);
-                              return str_a < str_b;
-                          });
+                std::stable_sort(sorted_rows.begin(), sorted_rows.end(),
+                                 [&sorted_fields](const Row* a, const Row* b) {
+                                     return Serializer::row_less_canonical(a, b, sorted_fields);
+                                 });
             }
 
             for (size_t ri = 0; ri < sorted_rows.size(); ++ri) {

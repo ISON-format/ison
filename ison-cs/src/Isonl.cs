@@ -350,23 +350,12 @@ namespace IsonParser
                 var sortedFields = Serializer.SortFieldsCanonical(block.Fields);
                 string fieldsStr = FieldsHeader(block, sortedFields);
 
-                List<Dictionary<string, object?>> sortedRows;
-                if (sortedFields.Count > 0)
-                {
-                    string keyField = sortedFields[0];
-                    sortedRows = block.Rows
-                        .OrderBy(r => r.TryGetValue(keyField, out var v) && v != null ? 0 : 1)
-                        .ThenBy(r =>
-                        {
-                            r.TryGetValue(keyField, out var v);
-                            return v == null ? string.Empty : Serializer.RowKeyToString(v);
-                        }, StringComparer.Ordinal)
-                        .ToList();
-                }
-                else
-                {
-                    sortedRows = block.Rows;
-                }
+                // Share the ISON row sort rather than carrying a second copy —
+                // the duplicate is how a first-column-only sort survives here
+                // after canonical ISON is fixed.
+                var sortedRows = sortedFields.Count > 0
+                    ? Serializer.SortRowsByKeyCanonical(block, sortedFields)
+                    : block.Rows;
 
                 foreach (var row in sortedRows)
                 {

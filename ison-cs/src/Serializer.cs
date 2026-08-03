@@ -189,10 +189,21 @@ namespace IsonParser
         }
 
         /// <summary>
-        /// Sort rows ordinal-string by the first canonical column. Rows whose
-        /// key is null sort after rows with a value.
+        /// Order rows on the FULL canonical field tuple.
+        ///
+        /// Keying on the first column alone left ties resolved by input order,
+        /// so the same logical data serialized to different bytes depending on
+        /// how the rows were built — which defeats content addressing and
+        /// prefix stability.
+        ///
+        /// Values compare as UTF-8 bytes, reusing the same ByteArrayComparer as
+        /// SortFieldsCanonical. C# strings are UTF-16, so StringComparer.Ordinal
+        /// would order astral values differently from every other
+        /// implementation: "Ａ" (U+FF21) encodes to EF BF A1 and must precede
+        /// "😀" (U+1F600) at F0 9F 98 80, while UTF-16 puts the emoji's lead
+        /// surrogate D83D first. Nulls sort last at every position.
         /// </summary>
-        private static List<Dictionary<string, object?>> SortRowsByKeyCanonical(
+        internal static List<Dictionary<string, object?>> SortRowsByKeyCanonical(
             Block block, List<string> sortedFields)
         {
             if (block.Rows.Count == 0 || sortedFields.Count == 0)
@@ -200,16 +211,29 @@ namespace IsonParser
                 return block.Rows;
             }
 
-            string keyField = sortedFields[0];
+            var byteComparer = new ByteArrayComparer();
 
-            return block.Rows
-                .OrderBy(row => GetNestedValue(row, keyField) == null ? 1 : 0)
-                .ThenBy(row =>
+            var sorted = new List<Dictionary<string, object?>>(block.Rows);
+            sorted.Sort((a, b) =>
+            {
+                foreach (string field in sortedFields)
                 {
-                    object? v = GetNestedValue(row, keyField);
-                    return v == null ? string.Empty : RowKeyToString(v);
-                }, StringComparer.Ordinal)
-                .ToList();
+                    object? va = GetNestedValue(a, field);
+                    object? vb = GetNestedValue(b, field);
+
+                    if (va == null && vb == null) continue;
+                    if (va == null) return 1;
+                    if (vb == null) return -1;
+
+                    int cmp = byteComparer.Compare(
+                        Encoding.UTF8.GetBytes(RowKeyToString(va)),
+                        Encoding.UTF8.GetBytes(RowKeyToString(vb)));
+                    if (cmp != 0) return cmp;
+                }
+                return 0;
+            });
+
+            return sorted;
         }
 
         /// <summary>
