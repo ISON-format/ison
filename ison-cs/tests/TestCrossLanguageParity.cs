@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -89,6 +90,61 @@ namespace IsonParser.Tests
             string once = Ison.Dumps(LoadCase(caseName));
             string twice = Ison.Dumps(Ison.Loads(once));
             Assert.Equal(once, twice);
+        }
+    }
+
+    /// <summary>
+    /// Order independence: every permutation of the same logical document must
+    /// serialize to identical canonical bytes.
+    ///
+    /// The top-level corpus cannot express this — a single input has one row
+    /// order, so its output is deterministic whether or not the row sort is
+    /// total. Cases live in benchmark/parity/permuted/&lt;name&gt;/{a,b,c}.ison
+    /// with one shared expected output per mode.
+    /// </summary>
+    public class TestPermutedParity
+    {
+        private static string PermutedDir =>
+            Path.Combine(TestPaths.FindRepositoryRoot(), "benchmark", "parity", "permuted");
+
+        public static IEnumerable<object[]> Cases()
+        {
+            if (!Directory.Exists(PermutedDir)) yield break;
+            foreach (string dir in Directory.GetDirectories(PermutedDir)
+                         .OrderBy(d => d, StringComparer.Ordinal))
+            {
+                yield return new object[] { Path.GetFileName(dir) };
+            }
+        }
+
+        [Theory]
+        [MemberData(nameof(Cases))]
+        public void EveryPermutationYieldsTheSameBytes(string caseName)
+        {
+            string dir = Path.Combine(PermutedDir, caseName);
+
+            string? Expected(string mode)
+            {
+                string p = Path.Combine(dir, mode + ".expected");
+                return File.Exists(p)
+                    ? File.ReadAllText(p, Encoding.UTF8).Replace("\r\n", "\n")
+                    : null;
+            }
+
+            string? canonical = Expected("canonical");
+            string? canonicalIsonl = Expected("canonical_isonl");
+
+            var variants = Directory.GetFiles(dir, "*.ison")
+                .OrderBy(f => f, StringComparer.Ordinal).ToList();
+            Assert.True(variants.Count > 1, "a permuted case needs at least two variants");
+
+            foreach (string path in variants)
+            {
+                var doc = Ison.Loads(File.ReadAllText(path, Encoding.UTF8).Replace("\r\n", "\n"));
+
+                if (canonical != null) Assert.Equal(canonical, Ison.DumpsCanonical(doc));
+                if (canonicalIsonl != null) Assert.Equal(canonicalIsonl, Ison.DumpsCanonicalIsonl(doc));
+            }
         }
     }
 }

@@ -86,3 +86,64 @@ fn canonical_is_idempotent() {
         assert_eq!(once, ison_rs::dumps_canonical(&reparsed), "{case}");
     }
 }
+
+/// Order independence: every permutation of the same logical document must
+/// serialize to identical canonical bytes.
+///
+/// The top-level corpus cannot express this — a single input has one row
+/// order, so its output is deterministic whether or not the row sort is total.
+/// Cases live in benchmark/parity/permuted/<name>/{a,b,c}.ison with one shared
+/// expected output per mode.
+#[test]
+fn permutations_agree() {
+    let dir = parity_dir().join("permuted");
+    if !dir.exists() {
+        return;
+    }
+
+    let mut cases: Vec<PathBuf> = fs::read_dir(&dir)
+        .expect("read permuted dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    cases.sort();
+    assert!(!cases.is_empty(), "permuted corpus is empty");
+
+    for case in &cases {
+        let name = case.file_name().unwrap().to_string_lossy().into_owned();
+
+        let expected = |mode: &str| -> Option<String> {
+            let p = case.join(format!("{mode}.expected"));
+            fs::read_to_string(p).ok().map(|s| s.replace("\r\n", "\n"))
+        };
+        let want_canonical = expected("canonical");
+        let want_isonl = expected("canonical_isonl");
+
+        let mut variants: Vec<PathBuf> = fs::read_dir(case)
+            .expect("read case dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("ison"))
+            .collect();
+        variants.sort();
+        assert!(variants.len() > 1, "{name}: needs at least two variants");
+
+        for v in &variants {
+            let src = fs::read_to_string(v).expect("read variant").replace("\r\n", "\n");
+            let doc = ison_rs::parse(&src).unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
+            let label = v.file_name().unwrap().to_string_lossy();
+
+            if let Some(ref want) = want_canonical {
+                assert_eq!(*want, ison_rs::dumps_canonical(&doc), "{name}/{label} canonical");
+            }
+            if let Some(ref want) = want_isonl {
+                assert_eq!(
+                    *want,
+                    ison_rs::dumps_canonical_isonl(&doc).expect("dumps_canonical_isonl"),
+                    "{name}/{label} canonical ISONL"
+                );
+            }
+        }
+    }
+}

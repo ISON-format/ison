@@ -87,3 +87,74 @@ func TestParityCanonicalIdempotent(t *testing.T) {
 		})
 	}
 }
+
+// Order independence: every permutation of the same logical document must
+// serialize to the same canonical bytes. The top-level corpus cannot express
+// this -- a single input has one row order, so its output is deterministic
+// whether or not the row sort is total.
+//
+// Cases live in benchmark/parity/permuted/<name>/{a,b,c}.ison with one shared
+// expected output per mode.
+
+const permutedDir = parityDir + "/permuted"
+
+func permutedCases(t *testing.T) []string {
+	t.Helper()
+	entries, err := os.ReadDir(permutedDir)
+	if err != nil {
+		t.Skipf("permuted corpus not available: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func TestParityPermuted(t *testing.T) {
+	for _, name := range permutedCases(t) {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(permutedDir, name)
+
+			readExpected := func(mode string) (string, bool) {
+				b, err := os.ReadFile(filepath.Join(dir, mode+".expected"))
+				if err != nil {
+					return "", false
+				}
+				return strings.ReplaceAll(string(b), "\r\n", "\n"), true
+			}
+
+			entries, err := os.ReadDir(dir)
+			require.NoError(t, err)
+
+			variants := 0
+			for _, e := range entries {
+				if !strings.HasSuffix(e.Name(), ".ison") {
+					continue
+				}
+				variants++
+				src, err := os.ReadFile(filepath.Join(dir, e.Name()))
+				require.NoError(t, err)
+
+				doc, err := Parse(strings.ReplaceAll(string(src), "\r\n", "\n"))
+				require.NoError(t, err)
+
+				if want, ok := readExpected("canonical"); ok {
+					assert.Equal(t, want, DumpsCanonical(doc),
+						"%s/%s canonical", name, e.Name())
+				}
+				if want, ok := readExpected("canonical_isonl"); ok {
+					got, err := DumpsCanonicalISONL(doc)
+					require.NoError(t, err)
+					assert.Equal(t, want, strings.TrimRight(got, "\n"),
+						"%s/%s canonical ISONL", name, e.Name())
+				}
+			}
+			assert.Greater(t, variants, 1, "a permuted case needs at least two variants")
+		})
+	}
+}

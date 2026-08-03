@@ -94,6 +94,54 @@ void check_case(const std::string& name) {
     expect_eq(name + ".canonical_idempotent", once, ison::dumps_canonical(ison::loads(once)));
 }
 
+// Order independence: every permutation of the same logical document must
+// serialize to identical canonical bytes.
+//
+// The top-level corpus cannot express this -- a single input has one row order,
+// so its output is deterministic whether or not the row sort is total. Variants
+// are probed by letter rather than listed, keeping this C++11 (no <filesystem>).
+void check_permuted(const std::string& name) {
+    const std::string base = "permuted/" + name + "/";
+
+    std::string canonical, canonical_isonl;
+    const bool has_canonical = read_file(base + "canonical.expected", canonical);
+    const bool has_isonl = read_file(base + "canonical_isonl.expected", canonical_isonl);
+
+    int variants = 0;
+    const std::string letters = "abcdef";
+    for (std::string::size_type i = 0; i < letters.size(); ++i) {
+        const std::string variant = letters.substr(i, 1) + ".ison";
+        std::string src;
+        if (!read_file(base + variant, src)) continue;
+        ++variants;
+
+        ison::Document doc;
+        try {
+            doc = ison::loads(src);
+        } catch (const std::exception& e) {
+            std::cerr << "[FAIL] " << base << variant << ": parse threw: " << e.what() << std::endl;
+            ++failures;
+            ++checks;
+            continue;
+        }
+
+        if (has_canonical) {
+            expect_eq(base + variant + ".canonical", canonical, ison::dumps_canonical(doc));
+        }
+        if (has_isonl) {
+            expect_eq(base + variant + ".canonical_isonl", canonical_isonl,
+                      ison::dumps_canonical_isonl(doc));
+        }
+    }
+
+    if (variants < 2) {
+        std::cerr << "[FAIL] " << base << ": needs at least two variants, found "
+                  << variants << std::endl;
+        ++failures;
+        ++checks;
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -121,6 +169,20 @@ int main() {
 
     for (std::vector<std::string>::const_iterator it = cases.begin(); it != cases.end(); ++it) {
         check_case(*it);
+    }
+
+    // permuted/ carries its own manifest, same convention as cases.txt.
+    std::string permuted_manifest;
+    if (read_file("permuted/cases.txt", permuted_manifest)) {
+        std::istringstream plines(permuted_manifest);
+        std::string pline;
+        while (std::getline(plines, pline)) {
+            while (!pline.empty() &&
+                   (pline[pline.size() - 1] == '\r' || pline[pline.size() - 1] == ' ')) {
+                pline.erase(pline.size() - 1);
+            }
+            if (!pline.empty()) check_permuted(pline);
+        }
     }
 
     std::cout << "parity: " << (checks - failures) << "/" << checks
