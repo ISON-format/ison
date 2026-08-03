@@ -743,15 +743,30 @@ class Serializer:
         if not block.rows or not sorted_fields:
             return block.rows
 
-        key_field = sorted_fields[0]
-
         def row_sort_key(row):
-            key_value = cls._get_nested_value(row, key_field)
-            # Rows with null key sort to the end
-            if key_value is None:
-                return (1, '')  # (sort_group, value)
-            # Convert key to string for ordinal comparison
-            return (0, str(key_value))
+            # Key on EVERY canonical column, not just the first. Keying on the
+            # first column alone leaves ties resolved by input order, so the
+            # same logical data serializes to different bytes depending on the
+            # order rows happened to be built in — which defeats the point of
+            # canonical form (content addressing, prefix stability).
+            #
+            # Each column contributes (group, bytes):
+            #   - group 0/1 keeps nulls sorting last at EVERY position, and
+            #     keeps the key comparable — None is not orderable against str.
+            #   - UTF-8 bytes, not str: _sort_fields_canonical already encodes
+            #     explicitly, because UTF-16 languages order astral characters
+            #     differently ("Ａ" U+FF21 encodes to EF BF A1 and must precede
+            #     "😀" U+1F600 at F0 9F 98 80, while UTF-16 puts the emoji's
+            #     lead surrogate D83D first). Row values need the same rule or
+            #     the two sorts disagree on encoding.
+            key = []
+            for field in sorted_fields:
+                value = cls._get_nested_value(row, field)
+                if value is None:
+                    key.append((1, b''))
+                else:
+                    key.append((0, str(value).encode('utf-8')))
+            return tuple(key)
 
         return sorted(block.rows, key=row_sort_key)
 
@@ -1607,16 +1622,12 @@ class ISONLSerializer:
             sorted_fields = Serializer._sort_fields_canonical(block.fields)
             fields_str = cls._fields_header(block, sorted_fields)
 
-            # Sort rows by first column value (key), using canonical field order
+            # Sort rows on the full canonical tuple, matching canonical ISON.
+            # Keying on the first column alone leaves ties resolved by input
+            # order; see Serializer._sort_rows_by_key_canonical for why each
+            # column contributes (group, utf-8 bytes).
             if sorted_fields:
-                key_field = sorted_fields[0]
-                sorted_rows = sorted(
-                    block.rows,
-                    key=lambda row: (
-                        (1, '') if row.get(key_field) is None
-                        else (0, str(row.get(key_field)))
-                    )
-                )
+                sorted_rows = Serializer._sort_rows_by_key_canonical(block, sorted_fields)
             else:
                 sorted_rows = block.rows
 
