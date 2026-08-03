@@ -1,0 +1,5 @@
+table.t
+key n v
+k 1 a
+k 2 a
+k null b
