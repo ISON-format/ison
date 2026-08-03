@@ -16,9 +16,22 @@ Exit: 0 all passed, 1 any failed, 2 corpus missing
 """
 from __future__ import annotations
 
+import io
 import json
 import pathlib
 import sys
+
+# Cases carry astral characters on purpose (the UTF-8 vs UTF-16 sentinels), and
+# a Windows console defaults to cp1252, which cannot encode them. Without this
+# the runner dies inside its own failure report rather than reporting the
+# failure.
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(
+        sys.stdout.buffer, encoding="utf-8", errors="backslashreplace", line_buffering=True
+    )
+    sys.stderr = io.TextIOWrapper(
+        sys.stderr.buffer, encoding="utf-8", errors="backslashreplace", line_buffering=True
+    )
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "ison-py" / "src"))
 
