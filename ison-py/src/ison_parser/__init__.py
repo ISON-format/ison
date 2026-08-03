@@ -835,7 +835,18 @@ class Serializer:
 
     @classmethod
     def _get_nested_value(cls, obj: dict, path: str) -> Any:
-        """Get a value from nested dictionary using dot-path"""
+        """Get a value from nested dictionary using dot-path.
+
+        A field name containing '.' is a dot path, so ``a.b`` normally reads
+        ``obj['a']['b']``. When that path is absent but the literal key
+        ``'a.b'`` is present, the flat key wins instead of the row emitting
+        ``null``. Both forms cannot be present unless the caller built both,
+        so the fallback is unambiguous, and without it a flat key holding a
+        dot silently loses its value at write time.
+        """
+        if '.' not in path:
+            return obj.get(path) if isinstance(obj, dict) else None
+
         parts = path.split('.')
         current = obj
 
@@ -843,6 +854,9 @@ class Serializer:
             if isinstance(current, dict) and part in current:
                 current = current[part]
             else:
+                # Dot path missed - fall back to the literal key.
+                if isinstance(obj, dict) and path in obj:
+                    return obj[path]
                 return None
 
         return current

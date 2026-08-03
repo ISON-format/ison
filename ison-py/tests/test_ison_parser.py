@@ -182,6 +182,50 @@ id customer.name customer.address.city customer.address.state total
     print("[PASS] test_dot_path_fields")
 
 
+def test_flat_key_containing_a_dot_is_not_lost():
+    """A row key that literally contains '.' must still serialize.
+
+    'a.b' is read as a dot path, so a flat key of that name used to miss the
+    lookup and emit null - the value was destroyed at write time. The dot
+    path still wins when it resolves; the flat key is only a fallback.
+    """
+    from ison_parser import dumps_canonical
+
+    flat = Document(blocks=[Block(
+        kind="table", name="t", fields=["id", "a.b"],
+        rows=[{"id": 1, "a.b": "v"}],
+    )])
+    assert dumps_canonical(flat) == "table.t\nid a.b\n1 v"
+
+    # The dot-path feature is unchanged.
+    nested = Document(blocks=[Block(
+        kind="table", name="t", fields=["id", "a.b"],
+        rows=[{"id": 1, "a": {"b": "v"}}],
+    )])
+    assert dumps_canonical(nested) == "table.t\nid a.b\n1 v"
+
+    deep = Document(blocks=[Block(
+        kind="table", name="t", fields=["id", "a.b.c"],
+        rows=[{"id": 1, "a": {"b": {"c": "deep"}}}],
+    )])
+    assert dumps_canonical(deep) == "table.t\nid a.b.c\n1 deep"
+
+    # A genuinely absent value is still null.
+    absent = Document(blocks=[Block(
+        kind="table", name="t", fields=["id", "x.y"], rows=[{"id": 1}],
+    )])
+    assert dumps_canonical(absent) == "table.t\nid x.y\n1 null"
+
+    # If a caller built both, the nested path wins.
+    both = Document(blocks=[Block(
+        kind="table", name="t", fields=["id", "a.b"],
+        rows=[{"id": 1, "a": {"b": "nested"}, "a.b": "flat"}],
+    )])
+    assert dumps_canonical(both) == "table.t\nid a.b\n1 nested"
+
+    print("[PASS] test_flat_key_containing_a_dot_is_not_lost")
+
+
 def test_comments():
     """Test comment handling"""
     ison = """# This is a header comment

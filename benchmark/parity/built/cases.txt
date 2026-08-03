@@ -1,5 +1,6 @@
 block_name_space
 field_name_colon
+field_name_dot_flat
 field_name_hash
 field_name_hash_infix
 field_name_pipe
