@@ -1008,7 +1008,10 @@ func sortRowsByKeyCanonical(block *Block, sortedFields []FieldInfo) []Row {
 				return true
 			}
 
-			cmp := bytes.Compare([]byte(valueToString(vi)), []byte(valueToString(vj)))
+			// strings.Compare is byte-wise on Go's UTF-8 strings, so this
+			// matches bytes.Compare without allocating a []byte per value on
+			// every comparison.
+			cmp := strings.Compare(valueToString(vi), valueToString(vj))
 			if cmp != 0 {
 				return cmp < 0
 			}
