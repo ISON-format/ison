@@ -149,7 +149,10 @@ namespace IsonParser.Tests
                 Rows = new List<Dictionary<string, object?>> { new() { { "id", 1L } } }
             });
 
-            Assert.Throws<IsonException>(() => Ison.DumpsIsonl(doc));
+            // ThrowsAny, not Throws: an unwritable *name* now raises the more
+            // specific IsonNameException, while ISONL's own extras (quote,
+            // backslash) still raise IsonException. The contract is rejection.
+            Assert.ThrowsAny<IsonException>(() => Ison.DumpsIsonl(doc));
         }
 
         [Fact]
@@ -162,7 +165,10 @@ namespace IsonParser.Tests
                 Rows = new List<Dictionary<string, object?>> { new() { { "id", 1L } } }
             });
 
-            Assert.Throws<IsonException>(() => Ison.DumpsIsonl(doc));
+            // ThrowsAny, not Throws: an unwritable *name* now raises the more
+            // specific IsonNameException, while ISONL's own extras (quote,
+            // backslash) still raise IsonException. The contract is rejection.
+            Assert.ThrowsAny<IsonException>(() => Ison.DumpsIsonl(doc));
         }
 
         [Fact]

@@ -51,11 +51,15 @@ func TestParityCorpus(t *testing.T) {
 			doc, err := Parse(parityRead(t, name, "ison"))
 			require.NoError(t, err)
 
+			canonical, err := DumpsCanonical(doc)
+			require.NoError(t, err)
 			assert.Equal(t, parityRead(t, name, "canonical.expected"),
-				DumpsCanonical(doc), "canonical ISON")
+				canonical, "canonical ISON")
 
+			regular, err := Dumps(doc)
+			require.NoError(t, err)
 			assert.Equal(t, parityRead(t, name, "dumps.expected"),
-				Dumps(doc), "regular ISON")
+				regular, "regular ISON")
 
 			isonl, err := DumpsISONL(doc)
 			require.NoError(t, err)
@@ -79,11 +83,14 @@ func TestParityCanonicalIdempotent(t *testing.T) {
 			doc, err := Parse(parityRead(t, name, "ison"))
 			require.NoError(t, err)
 
-			once := DumpsCanonical(doc)
+			once, err := DumpsCanonical(doc)
+			require.NoError(t, err)
 			reparsed, err := Parse(once)
 			require.NoError(t, err)
 
-			assert.Equal(t, once, DumpsCanonical(reparsed))
+			twice, err := DumpsCanonical(reparsed)
+			require.NoError(t, err)
+			assert.Equal(t, once, twice)
 		})
 	}
 }
@@ -144,7 +151,9 @@ func TestParityPermuted(t *testing.T) {
 				require.NoError(t, err)
 
 				if want, ok := readExpected("canonical"); ok {
-					assert.Equal(t, want, DumpsCanonical(doc),
+					got, err := DumpsCanonical(doc)
+					require.NoError(t, err)
+					assert.Equal(t, want, got,
 						"%s/%s canonical", name, e.Name())
 				}
 				if want, ok := readExpected("canonical_isonl"); ok {

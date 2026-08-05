@@ -247,7 +247,8 @@ func TestDumps(t *testing.T) {
 	})
 	doc.AddBlock(block)
 
-	output := Dumps(doc)
+	output, err := Dumps(doc)
+	require.NoError(t, err)
 	assert.Contains(t, output, "table.users")
 	assert.Contains(t, output, "id:int")
 	assert.Contains(t, output, "name:string")
@@ -264,7 +265,8 @@ id:int name:string active:bool
 	doc, err := Parse(input)
 	require.NoError(t, err)
 
-	output := Dumps(doc)
+	output, err := Dumps(doc)
+	require.NoError(t, err)
 	doc2, err := Parse(output)
 	require.NoError(t, err)
 
@@ -655,7 +657,8 @@ func TestDumpsWithOptions(t *testing.T) {
 		AlignColumns: false,
 		Delimiter:    "\t",
 	}
-	output := DumpsWithOptions(doc, opts)
+	output, err := DumpsWithOptions(doc, opts)
+	require.NoError(t, err)
 	assert.Contains(t, output, "id:int\tname:string")
 	assert.Contains(t, output, "1\tAlice")
 }
@@ -996,7 +999,9 @@ func TestInlineTrailingComment(t *testing.T) {
 	out.AddRow(Row{"a": String("#tag")})
 	doc.AddBlock(out)
 
-	parsed, err := Parse(Dumps(doc))
+	text, err := Dumps(doc)
+	require.NoError(t, err)
+	parsed, err := Parse(text)
 	require.NoError(t, err)
 	parsedBlock, ok := parsed.Get("t")
 	require.True(t, ok)
@@ -1018,9 +1023,11 @@ func TestISONRoundtripProperty(t *testing.T) {
 	}
 	doc.AddBlock(block)
 
-	parsed, err := Parse(Dumps(doc))
+	text, err := Dumps(doc)
 	require.NoError(t, err)
-	require.Len(t, parsed.Blocks, 1, "header-like values must stay within one block: %q", Dumps(doc))
+	parsed, err := Parse(text)
+	require.NoError(t, err)
+	require.Len(t, parsed.Blocks, 1, "header-like values must stay within one block: %q", text)
 	parsedBlock, ok := parsed.Get("t")
 	require.True(t, ok)
 	require.Len(t, parsedBlock.Rows, len(headerLike))
@@ -1075,7 +1082,8 @@ func TestISONRoundtripProperty(t *testing.T) {
 		}
 		doc.AddBlock(block)
 
-		output := Dumps(doc)
+		output, err := Dumps(doc)
+		require.NoError(t, err)
 
 		parsed, err := Parse(output)
 		require.NoError(t, err, "trial %d: parse failed for %q", trial, output)
@@ -1112,7 +1120,8 @@ func TestCanonicalBlocksSorted(t *testing.T) {
 	block3.AddRow(Row{"id": String("3"), "name": String("Charlie")})
 	doc.AddBlock(block3)
 
-	canonical := DumpsCanonical(doc)
+	canonical, err := DumpsCanonical(doc)
+	require.NoError(t, err)
 
 	// Blocks should be in ordinal order: table.active_users < table.users < table.zulu
 	activeIdx := strings.Index(canonical, "table.active_users")
@@ -1135,7 +1144,8 @@ func TestCanonicalRowsSortedByKey(t *testing.T) {
 	block.AddRow(Row{"id": String("1"), "name": String("one")})
 	doc.AddBlock(block)
 
-	canonical := DumpsCanonical(doc)
+	canonical, err := DumpsCanonical(doc)
+	require.NoError(t, err)
 	lines := strings.Split(canonical, "\n")
 
 	// Extract data lines (skip header and field line)
@@ -1163,7 +1173,8 @@ func TestCanonicalNullKeysSortLast(t *testing.T) {
 	block.AddRow(Row{"id": String("1"), "name": String("one")})
 	doc.AddBlock(block)
 
-	canonical := DumpsCanonical(doc)
+	canonical, err := DumpsCanonical(doc)
+	require.NoError(t, err)
 	lines := strings.Split(canonical, "\n")
 
 	// Extract data lines (skip header and field line)
@@ -1190,10 +1201,12 @@ func TestCanonicalIdempotent(t *testing.T) {
 	block.AddRow(Row{"id": String("1"), "name": String("Alice")})
 	doc.AddBlock(block)
 
-	canonical1 := DumpsCanonical(doc)
+	canonical1, err := DumpsCanonical(doc)
+	require.NoError(t, err)
 	parsed, err := Parse(canonical1)
 	require.NoError(t, err)
-	canonical2 := DumpsCanonical(parsed)
+	canonical2, err := DumpsCanonical(parsed)
+	require.NoError(t, err)
 
 	assert.Equal(t, canonical1, canonical2)
 }
@@ -1208,7 +1221,8 @@ func TestCanonicalNoAlignment(t *testing.T) {
 	block.AddRow(Row{"short": String("a"), "very_long_name": String("b")})
 	doc.AddBlock(block)
 
-	canonical := DumpsCanonical(doc)
+	canonical, err := DumpsCanonical(doc)
+	require.NoError(t, err)
 
 	// Should be single space between columns, not padded
 	assert.Contains(t, canonical, "short very_long_name")
@@ -1299,7 +1313,8 @@ func TestCanonicalWithReferences(t *testing.T) {
 	})
 	doc.AddBlock(block)
 
-	canonical := DumpsCanonical(doc)
+	canonical, err := DumpsCanonical(doc)
+	require.NoError(t, err)
 	lines := strings.Split(canonical, "\n")
 
 	// Extract data lines
@@ -1326,7 +1341,8 @@ func TestCanonicalEmptyStringHandling(t *testing.T) {
 	block.AddRow(Row{"id": String("2"), "name": String("value")})
 	doc.AddBlock(block)
 
-	canonical := DumpsCanonical(doc)
+	canonical, err := DumpsCanonical(doc)
+	require.NoError(t, err)
 
 	// Empty string should be quoted
 	assert.Contains(t, canonical, "\"\"")
@@ -1342,7 +1358,8 @@ func TestCanonicalFieldInfoPreserved(t *testing.T) {
 	block.AddRow(Row{"id": String("1"), "count": Int(42)})
 	doc.AddBlock(block)
 
-	canonical := DumpsCanonical(doc)
+	canonical, err := DumpsCanonical(doc)
+	require.NoError(t, err)
 
 	assert.Contains(t, canonical, "id:string count:int")
 }
@@ -1368,7 +1385,8 @@ func TestCanonicalFieldsSorted(t *testing.T) {
 	})
 	doc.AddBlock(block)
 
-	canonical := DumpsCanonical(doc)
+	canonical, err := DumpsCanonical(doc)
+	require.NoError(t, err)
 	lines := strings.Split(canonical, "\n")
 
 	// Field header should be sorted: id first, then active, email, name, score
@@ -1395,7 +1413,8 @@ func TestCanonicalUTF8Divergence(t *testing.T) {
 	})
 	doc.AddBlock(block)
 
-	canonical := DumpsCanonical(doc)
+	canonical, err := DumpsCanonical(doc)
+	require.NoError(t, err)
 	lines := strings.Split(canonical, "\n")
 
 	// Field header should have Ａfield before 😀field (0xEF < 0xF0)
@@ -1413,7 +1432,8 @@ func TestCanonicalGoldenFixtureBenchmark(t *testing.T) {
 	require.NoError(t, err)
 
 	// Canonicalize
-	canonical := DumpsCanonical(doc)
+	canonical, err := DumpsCanonical(doc)
+	require.NoError(t, err)
 
 	// Load the expected output
 	expectedBytes, err := os.ReadFile("../benchmark/golden_fixture_field_sort.expected.ison")
@@ -1456,7 +1476,8 @@ func TestCanonicalGoldenFixture(t *testing.T) {
 	users.AddRow(Row{"id": String("3"), "name": String("Charlie"), "active": Bool(false)})
 	doc.AddBlock(users)
 
-	canonical := DumpsCanonical(doc)
+	canonical, err := DumpsCanonical(doc)
+	require.NoError(t, err)
 
 	// Expected order: blocks sorted (edges < users), rows sorted within each
 	// Fields are sorted canonically: id first, then alphabetically by UTF-8 bytes (active < name)

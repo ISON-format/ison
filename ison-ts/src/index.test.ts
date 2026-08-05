@@ -21,6 +21,7 @@ import {
   isString,
   isReference,
   ISONSyntaxError,
+  ISONError,
 } from "./index";
 
 describe("Basic Parsing", () => {
@@ -429,9 +430,12 @@ describe("ISONL Envelope Validation", () => {
       { name: 'na|me' }, { name: 'na\nme' }, { name: 'na me' }, { name: '' },
       { fields: ['bad field'] }, { fields: ['bad|field'] }, { fields: [''] },
     ];
+    // ISONError, not ISONSyntaxError: an unwritable *name* now raises the more
+    // specific ISONNameError, while ISONL's own extras (quote, backslash) still
+    // raise ISONSyntaxError. The contract is that the envelope is rejected.
     for (const kwargs of badCases) {
       expect(() => dumpsIsonl(makeDoc(kwargs)), `should have rejected envelope ${JSON.stringify(kwargs)}`)
-        .toThrow(ISONSyntaxError);
+        .toThrow(ISONError);
     }
   });
 

@@ -28,7 +28,7 @@
     "build:cjs": "node -e \"require('fs').copyFileSync('src/ison-parser.js', 'dist/ison-parser.js')\"",
     "build:esm": "node scripts/build-esm.js",
     "build:validation": "node scripts/build-validation.js",
-    "test": "node test/test_ison_parser.js && node test/test_validation.js && node test/test_canonical.js && node test/test_parity.js",
+    "test": "node test/test_ison_parser.js && node test/test_validation.js && node test/test_canonical.js && node test/test_parity.js && node test/test_built.js",
     "prepublishOnly": "npm run build && npm test"
   },
   "repository": {

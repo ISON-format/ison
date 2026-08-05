@@ -229,6 +229,103 @@ public:
     explicit ISONTypeError(const std::string& message) : ISONError(message) {}
 };
 
+// A block or field name has no unambiguous ISON encoding.
+//
+// Thrown at serialization, not construction: a Document may hold any name in
+// memory, but writing one that cannot be read back would produce a file that
+// silently parses as different data.
+class ISONNameError : public ISONError {
+public:
+    explicit ISONNameError(const std::string& message) : ISONError(message) {}
+};
+
+// =============================================================================
+// Name validation
+// =============================================================================
+//
+// Names from loads() are safe by construction - the parser could not have
+// produced them otherwise. These rules exist for the other path: a Document
+// built in code whose names never had to survive a parse.
+//
+// Each forbidden character is one the reader gives a meaning to:
+//
+//   space, tab   the field header is whitespace-separated, so "first name"
+//                reads back as two fields
+//   newline, CR  ends the header line
+//   ':'          separates a field name from its type ("id:int")
+//   '|'          the ISONL field delimiter
+//   '#'          a comment, but only line-initial - "a#b" is unambiguous and
+//                stays legal, so that is a prefix rule rather than a character
+//                listed here
+//
+// '.' is deliberately absent for field names: dotted keys address nested
+// values and flat keys containing dots round-trip correctly.
+namespace detail {
+
+inline bool name_char_forbidden(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+inline bool field_char_forbidden(char c) {
+    return name_char_forbidden(c) || c == ':' || c == '|';
+}
+
+inline std::string describe_char(char c) {
+    switch (c) {
+        case ' ':  return "a space";
+        case '\t': return "a tab";
+        case '\n': return "a newline";
+        case '\r': return "a carriage return";
+        default:   return std::string("'") + c + "'";
+    }
+}
+
+// Reject a field name that cannot be written and read back unchanged.
+inline void validate_field_name(const std::string& name) {
+    for (size_t i = 0; i < name.size(); ++i) {
+        if (field_char_forbidden(name[i])) {
+            throw ISONNameError(
+                "field name '" + name + "' contains " + describe_char(name[i]) +
+                ", which has no unambiguous ISON encoding");
+        }
+    }
+    if (!name.empty() && name[0] == '#') {
+        throw ISONNameError(
+            "field name '" + name + "' starts with '#', which begins a comment; "
+            "'#' elsewhere in a name is fine");
+    }
+    if (name.empty()) {
+        throw ISONNameError("field name is empty");
+    }
+}
+
+// Reject a block header that cannot be written and read back unchanged.
+inline void validate_block_name(const std::string& kind, const std::string& name) {
+    const char* labels[2] = {"kind", "name"};
+    const std::string* values[2] = {&kind, &name};
+    for (int p = 0; p < 2; ++p) {
+        const std::string& value = *values[p];
+        for (size_t i = 0; i < value.size(); ++i) {
+            if (name_char_forbidden(value[i])) {
+                throw ISONNameError(
+                    std::string("block ") + labels[p] + " '" + value + "' contains " +
+                    describe_char(value[i]) + ", which has no unambiguous ISON encoding");
+            }
+        }
+        if (value.empty()) {
+            throw ISONNameError(std::string("block ") + labels[p] + " is empty");
+        }
+    }
+    // The header splits on the first '.', so a dot in the kind would move the
+    // boundary and rename the block. A dot in the name survives.
+    if (kind.find('.') != std::string::npos) {
+        throw ISONNameError(
+            "block kind '" + kind + "' contains '.', which separates kind from name");
+    }
+}
+
+}  // namespace detail
+
 // =============================================================================
 // Reference Class
 // =============================================================================
@@ -365,6 +462,19 @@ public:
 // =============================================================================
 // Document Class
 // =============================================================================
+
+namespace detail {
+
+// Validate every name a block will emit. Defined here rather than beside the
+// other validators because it needs Block to be complete.
+inline void validate_block_names(const Block& block) {
+    validate_block_name(block.kind, block.name);
+    for (size_t i = 0; i < block.fields.size(); ++i) {
+        validate_field_name(block.fields[i]);
+    }
+}
+
+}  // namespace detail
 
 class Document {
 public:
@@ -908,6 +1018,8 @@ public:
 
 private:
     static std::string serialize_block_canonical(const Block& block) {
+        detail::validate_block_names(block);
+
         std::vector<std::string> lines;
         lines.push_back(block.kind + "." + block.name);
 
@@ -1009,6 +1121,8 @@ private:
 
 private:
     static std::string serialize_block(const Block& block, bool align_columns) {
+        detail::validate_block_names(block);
+
         std::vector<std::string> lines;
         lines.push_back(block.kind + "." + block.name);
 
@@ -1629,6 +1743,11 @@ private:
 
     // Reject kind/name/fields that cannot survive an ISONL round-trip
     static void validate_envelope(const Block& block) {
+        // The shared ISON name rules apply here too - a name unwritable in ISON
+        // is unwritable in ISONL. ISONL then adds its own: the quote and
+        // backslash that its value escaping gives meaning to.
+        detail::validate_block_names(block);
+
         validate_envelope_part("kind", block.kind);
         validate_envelope_part("name", block.name);
         if (block.kind.find('.') != std::string::npos) {

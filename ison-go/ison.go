@@ -402,13 +402,19 @@ func DefaultDumpsOptions() DumpsOptions {
 
 // Dump serializes a Document and writes it to a file
 func Dump(doc *Document, path string) error {
-	text := Dumps(doc)
+	text, err := Dumps(doc)
+	if err != nil {
+		return err
+	}
 	return os.WriteFile(path, []byte(text), 0644)
 }
 
 // DumpWithOptions serializes a Document with options and writes to a file
 func DumpWithOptions(doc *Document, path string, opts DumpsOptions) error {
-	text := DumpsWithOptions(doc, opts)
+	text, err := DumpsWithOptions(doc, opts)
+	if err != nil {
+		return err
+	}
 	return os.WriteFile(path, []byte(text), 0644)
 }
 
@@ -722,13 +728,23 @@ func parseReference(token string) Reference {
 	return Reference{ID: id, Namespace: namespace}
 }
 
-// Dumps serializes a Document back to ISON format
-func Dumps(doc *Document) string {
+// Dumps serializes a Document back to ISON format.
+//
+// Returns an error when a block or field name has no unambiguous ISON
+// encoding. Such a name cannot be written and read back as itself, so emitting
+// it would produce a file that silently parses as different data.
+func Dumps(doc *Document) (string, error) {
 	return DumpsWithOptions(doc, DefaultDumpsOptions())
 }
 
-// DumpsWithOptions serializes a Document with specified options
-func DumpsWithOptions(doc *Document, opts DumpsOptions) string {
+// DumpsWithOptions serializes a Document with specified options.
+func DumpsWithOptions(doc *Document, opts DumpsOptions) (string, error) {
+	for _, name := range doc.Order {
+		if err := validateBlockNames(doc.Blocks[name]); err != nil {
+			return "", err
+		}
+	}
+
 	var sb strings.Builder
 	delim := opts.Delimiter
 	if delim == "" {
@@ -810,7 +826,7 @@ func DumpsWithOptions(doc *Document, opts DumpsOptions) string {
 
 	// No trailing newline: ison-py, ison-js, ison-ts and ison-cs all end
 	// output at the last row, and canonical byte-identity requires agreement.
-	return strings.TrimRight(sb.String(), "\n")
+	return strings.TrimRight(sb.String(), "\n"), nil
 }
 
 // DumpsCanonical serializes a Document to canonical ISON format.
@@ -819,7 +835,13 @@ func DumpsWithOptions(doc *Document, opts DumpsOptions) string {
 // with single-space delimiter and no alignment, yielding byte-identical output
 // across implementations for the same logical data.
 // Empty blocks (no fields) are skipped.
-func DumpsCanonical(doc *Document) string {
+func DumpsCanonical(doc *Document) (string, error) {
+	for _, name := range doc.Order {
+		if err := validateBlockNames(doc.Blocks[name]); err != nil {
+			return "", err
+		}
+	}
+
 	// Sort block names by kind.name (ordinal-string comparison)
 	blockKeys := make([]string, 0, len(doc.Blocks))
 	for _, name := range doc.Order {
@@ -844,7 +866,7 @@ func DumpsCanonical(doc *Document) string {
 	}
 
 	// Join blocks with blank line separator
-	return strings.Join(blocksOutput, "\n\n")
+	return strings.Join(blocksOutput, "\n\n"), nil
 }
 
 // sortFieldsCanonical sorts fields for canonical form: id first, then alphabetically by UTF-8 bytes.
@@ -1199,6 +1221,94 @@ func padRight(s string, width int) string {
 	return s + strings.Repeat(" ", width-len(s))
 }
 
+// nameForbiddenChars lists the characters a block kind or name may not
+// contain; fieldForbiddenChars adds the two the field header gives meaning to.
+//
+// Names from Parse are safe by construction - the parser could not have
+// produced them otherwise. These rules exist for the other path: a Document
+// built in code whose names never had to survive a parse.
+//
+//	space, tab   the field header is whitespace-separated, so "first name"
+//	             reads back as two fields
+//	newline, CR  ends the header line
+//	':'          separates a field name from its type ("id:int")
+//	'|'          the ISONL field delimiter
+//	'#'          a comment, but only line-initial - "a#b" is unambiguous and
+//	             stays legal, so that is a prefix rule below rather than a
+//	             character listed here
+//
+// '.' is deliberately absent for field names: dotted keys address nested
+// values and flat keys containing dots round-trip correctly.
+const (
+	nameForbiddenChars  = " \t\n\r"
+	fieldForbiddenChars = nameForbiddenChars + ":|"
+)
+
+// describeChar names a character for an error message.
+func describeChar(r rune) string {
+	switch r {
+	case ' ':
+		return "a space"
+	case '\t':
+		return "a tab"
+	case '\n':
+		return "a newline"
+	case '\r':
+		return "a carriage return"
+	default:
+		return fmt.Sprintf("%q", r)
+	}
+}
+
+// validateFieldName rejects a field name that cannot be written and read back
+// unchanged.
+func validateFieldName(name string) error {
+	if i := strings.IndexAny(name, fieldForbiddenChars); i >= 0 {
+		return fmt.Errorf("field name %q contains %s, which has no unambiguous ISON encoding",
+			name, describeChar(rune(name[i])))
+	}
+	if strings.HasPrefix(name, "#") {
+		return fmt.Errorf("field name %q starts with '#', which begins a comment; '#' elsewhere in a name is fine", name)
+	}
+	if name == "" {
+		return fmt.Errorf("field name is empty")
+	}
+	return nil
+}
+
+// validateBlockName rejects a block header that cannot be written and read back
+// unchanged.
+func validateBlockName(kind, name string) error {
+	for _, part := range []struct{ label, value string }{{"kind", kind}, {"name", name}} {
+		if i := strings.IndexAny(part.value, nameForbiddenChars); i >= 0 {
+			return fmt.Errorf("block %s %q contains %s, which has no unambiguous ISON encoding",
+				part.label, part.value, describeChar(rune(part.value[i])))
+		}
+		if part.value == "" {
+			return fmt.Errorf("block %s is empty", part.label)
+		}
+	}
+	// The header splits on the first '.', so a dot in the kind would move the
+	// boundary and rename the block. A dot in the name survives.
+	if strings.Contains(kind, ".") {
+		return fmt.Errorf("block kind %q contains '.', which separates kind from name", kind)
+	}
+	return nil
+}
+
+// validateBlockNames validates every name a block will emit.
+func validateBlockNames(block *Block) error {
+	if err := validateBlockName(block.Kind, block.Name); err != nil {
+		return err
+	}
+	for _, field := range block.Fields {
+		if err := validateFieldName(field.Name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // isonlEnvelopeForbidden lists the characters that would corrupt the line
 // structure if they appeared raw in the envelope (kind, name, or field names).
 const isonlEnvelopeForbidden = "|\"\\ \t\n\r"
@@ -1207,6 +1317,13 @@ const isonlEnvelopeForbidden = "|\"\\ \t\n\r"
 // round-trip. Values are escaped, but the envelope is written raw, so it must
 // be free of delimiters and whitespace.
 func validateISONLEnvelope(block *Block) error {
+	// The shared ISON name rules apply here too - a name unwritable in ISON is
+	// unwritable in ISONL. ISONL then adds its own: the quote and backslash
+	// that its value escaping gives meaning to.
+	if err := validateBlockNames(block); err != nil {
+		return err
+	}
+
 	for _, part := range []struct{ label, value string }{
 		{"kind", block.Kind},
 		{"name", block.Name},
@@ -1467,7 +1584,7 @@ func ISONLToISON(isonlText string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return Dumps(doc), nil
+	return Dumps(doc)
 }
 
 // ISONLRecord represents a single ISONL record (one line)

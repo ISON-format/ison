@@ -51,13 +51,13 @@ fn matches_reference_output() {
 
         assert_eq!(
             read(case, "canonical.expected"),
-            ison_rs::dumps_canonical(&doc),
+            ison_rs::dumps_canonical(&doc).unwrap(),
             "{case}: canonical ISON"
         );
 
         assert_eq!(
             read(case, "dumps.expected"),
-            ison_rs::dumps(&doc, false),
+            ison_rs::dumps(&doc, false).unwrap(),
             "{case}: regular ISON"
         );
 
@@ -81,9 +81,9 @@ fn matches_reference_output() {
 fn canonical_is_idempotent() {
     for case in &cases() {
         let doc = ison_rs::parse(&read(case, "ison")).expect("parse");
-        let once = ison_rs::dumps_canonical(&doc);
+        let once = ison_rs::dumps_canonical(&doc).unwrap();
         let reparsed = ison_rs::parse(&once).expect("reparse canonical");
-        assert_eq!(once, ison_rs::dumps_canonical(&reparsed), "{case}");
+        assert_eq!(once, ison_rs::dumps_canonical(&reparsed).unwrap(), "{case}");
     }
 }
 
@@ -135,7 +135,7 @@ fn permutations_agree() {
             let label = v.file_name().unwrap().to_string_lossy();
 
             if let Some(ref want) = want_canonical {
-                assert_eq!(*want, ison_rs::dumps_canonical(&doc), "{name}/{label} canonical");
+                assert_eq!(*want, ison_rs::dumps_canonical(&doc).unwrap(), "{name}/{label} canonical");
             }
             if let Some(ref want) = want_isonl {
                 assert_eq!(

@@ -105,7 +105,7 @@ id type_ref namespace_ref simple_ref
     new_doc.blocks.push(block);
 
     println!("ISON output:");
-    println!("{}", dumps(&new_doc, true));
+    println!("{}", dumps(&new_doc, true).unwrap());
 
     // Example 5: ISONL format
     println!("\n5. ISONL Streaming Format:");

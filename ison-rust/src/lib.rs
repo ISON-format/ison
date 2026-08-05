@@ -808,9 +808,13 @@ impl Serializer {
         Self { align_columns, delimiter: delimiter.to_string() }
     }
 
-    fn serialize(&self, doc: &Document) -> String {
-        let parts: Vec<String> = doc.blocks.iter().map(|b| self.serialize_block(b)).collect();
-        parts.join("\n\n")
+    fn serialize(&self, doc: &Document) -> Result<String> {
+        let mut parts = Vec::with_capacity(doc.blocks.len());
+        for b in &doc.blocks {
+            validate_block_names(b)?;
+            parts.push(self.serialize_block(b));
+        }
+        Ok(parts.join("\n\n"))
     }
 
     fn serialize_block(&self, block: &Block) -> String {
@@ -956,7 +960,11 @@ impl CanonicalSerializer {
         Self
     }
 
-    fn serialize(&self, doc: &Document) -> String {
+    fn serialize(&self, doc: &Document) -> Result<String> {
+        for b in &doc.blocks {
+            validate_block_names(b)?;
+        }
+
         // Sort blocks ordinal-string by kind.name
         let mut sorted_blocks = doc.blocks.clone();
         sorted_blocks.sort_by(|a, b| {
@@ -969,7 +977,7 @@ impl CanonicalSerializer {
             .iter()
             .map(|b| self.serialize_block_canonical(b))
             .collect();
-        parts.join("\n\n")
+        Ok(parts.join("\n\n"))
     }
 
     fn sort_fields_canonical(&self, fields: &[String]) -> Vec<String> {
@@ -1445,8 +1453,120 @@ fn isonl_serialize_value(value: &Value) -> String {
     }
 }
 
+/// Characters a block kind or name may not contain, plus the two more that a
+/// field name may not.
+///
+/// Names from `loads` are safe by construction - the parser could not have
+/// produced them otherwise. These rules exist for the other path: a Document
+/// built in code whose names never had to survive a parse.
+///
+/// Each forbidden character is one the reader gives a meaning to:
+///
+/// - space, tab: the field header is whitespace-separated, so `first name`
+///   reads back as two fields
+/// - newline, CR: ends the header line
+/// - `:`: separates a field name from its type (`id:int`)
+/// - `|`: the ISONL field delimiter
+/// - `#`: a comment, but only line-initial - `a#b` is unambiguous and stays
+///   legal, so that is a prefix rule below rather than a character listed here
+///
+/// `.` is deliberately absent for field names: dotted keys address nested
+/// values and flat keys containing dots round-trip correctly.
+const NAME_FORBIDDEN: [char; 4] = [' ', '\t', '\n', '\r'];
+const FIELD_FORBIDDEN: [char; 6] = [' ', '\t', '\n', '\r', ':', '|'];
+
+/// Name a character for an error message.
+fn describe_char(c: char) -> String {
+    match c {
+        ' ' => "a space".to_string(),
+        '\t' => "a tab".to_string(),
+        '\n' => "a newline".to_string(),
+        '\r' => "a carriage return".to_string(),
+        other => format!("'{}'", other),
+    }
+}
+
+/// Reject a field name that cannot be written and read back unchanged.
+fn validate_field_name(name: &str) -> Result<()> {
+    if let Some(c) = name.chars().find(|c| FIELD_FORBIDDEN.contains(c)) {
+        return Err(ISONError {
+            message: format!(
+                "field name '{}' contains {}, which has no unambiguous ISON encoding",
+                name,
+                describe_char(c)
+            ),
+            line: None,
+        });
+    }
+    if name.starts_with('#') {
+        return Err(ISONError {
+            message: format!(
+                "field name '{}' starts with '#', which begins a comment; '#' elsewhere in a name is fine",
+                name
+            ),
+            line: None,
+        });
+    }
+    if name.is_empty() {
+        return Err(ISONError {
+            message: "field name is empty".to_string(),
+            line: None,
+        });
+    }
+    Ok(())
+}
+
+/// Reject a block header that cannot be written and read back unchanged.
+fn validate_block_name(kind: &str, name: &str) -> Result<()> {
+    for (label, value) in [("kind", kind), ("name", name)] {
+        if let Some(c) = value.chars().find(|c| NAME_FORBIDDEN.contains(c)) {
+            return Err(ISONError {
+                message: format!(
+                    "block {} '{}' contains {}, which has no unambiguous ISON encoding",
+                    label,
+                    value,
+                    describe_char(c)
+                ),
+                line: None,
+            });
+        }
+        if value.is_empty() {
+            return Err(ISONError {
+                message: format!("block {} is empty", label),
+                line: None,
+            });
+        }
+    }
+    // The header splits on the first '.', so a dot in the kind would move the
+    // boundary and rename the block. A dot in the name survives.
+    if kind.contains('.') {
+        return Err(ISONError {
+            message: format!(
+                "block kind '{}' contains '.', which separates kind from name",
+                kind
+            ),
+            line: None,
+        });
+    }
+    Ok(())
+}
+
+/// Validate every name a block will emit.
+fn validate_block_names(block: &Block) -> Result<()> {
+    validate_block_name(&block.kind, &block.name)?;
+    for field in &block.fields {
+        validate_field_name(field)?;
+    }
+    Ok(())
+}
+
 /// Reject kind/name/fields that cannot survive an ISONL round-trip
 fn validate_isonl_envelope(block: &Block) -> Result<()> {
+    // The shared ISON name rules apply here too - a name unwritable in ISON is
+    // unwritable in ISONL. ISONL then adds its own: the quote and backslash
+    // that its value escaping gives meaning to.
+    validate_block_names(block)?;
+
     for (label, value) in [("kind", &block.kind), ("name", &block.name)] {
         if value.is_empty() {
             return Err(ISONError {
@@ -1642,7 +1762,7 @@ pub fn loads(text: &str) -> Result<Document> {
 /// # Arguments
 /// * `doc` - The document to serialize
 /// * `align_columns` - Whether to align columns with padding (default: false for token efficiency)
-pub fn dumps(doc: &Document, align_columns: bool) -> String {
+pub fn dumps(doc: &Document, align_columns: bool) -> Result<String> {
     Serializer::new(align_columns).serialize(doc)
 }
 
@@ -1652,7 +1772,11 @@ pub fn dumps(doc: &Document, align_columns: bool) -> String {
 /// * `doc` - The document to serialize
 /// * `align_columns` - Whether to align columns with padding
 /// * `delimiter` - Column separator (default: " ", alternatives: ",")
-pub fn dumps_with_delimiter(doc: &Document, align_columns: bool, delimiter: &str) -> String {
+pub fn dumps_with_delimiter(
+    doc: &Document,
+    align_columns: bool,
+    delimiter: &str,
+) -> Result<String> {
     Serializer::with_delimiter(align_columns, delimiter).serialize(doc)
 }
 
@@ -1669,7 +1793,7 @@ pub fn dumps_with_delimiter(doc: &Document, align_columns: bool, delimiter: &str
 ///
 /// # Returns
 /// Canonical ISON formatted string (deterministic, sorted)
-pub fn dumps_canonical(doc: &Document) -> String {
+pub fn dumps_canonical(doc: &Document) -> Result<String> {
     CanonicalSerializer::new().serialize(doc)
 }
 
@@ -1703,7 +1827,7 @@ pub fn ison_to_isonl(ison_text: &str) -> Result<String> {
 /// Convert ISONL text to ISON text
 pub fn isonl_to_ison(isonl_text: &str) -> Result<String> {
     let doc = parse_isonl(isonl_text)?;
-    Ok(dumps(&doc, false))
+    dumps(&doc, false)
 }
 
 /// Options for json_to_ison conversion
@@ -2128,12 +2252,17 @@ pub fn json_to_ison_with_options(json_text: &str, opts: JsonToIsonOptions) -> Re
         doc.blocks.push(block);
     }
 
-    Ok(dumps(&doc, opts.align_columns))
+    dumps(&doc, opts.align_columns)
 }
 
-/// Convert JSON to canonical ISON format (requires serde feature)
+/// Build a Document from JSON text (requires serde feature).
+///
+/// The other six implementations all expose a from_dict / FromDict / fromDict
+/// entry point; Rust only had converters that went straight to a string. That
+/// left the one construction path the parser cannot reach - a Document whose
+/// names never had to survive a parse - untestable from outside the crate.
 #[cfg(feature = "serde")]
-pub fn json_to_ison_canonical(json_text: &str) -> Result<String> {
+pub fn json_to_document(json_text: &str) -> Result<Document> {
     // Use default options for JSON to ISON conversion
     let json_value: serde_json::Value = serde_json::from_str(json_text)
         .map_err(|e| ISONError { message: format!("JSON parse error: {}", e), line: None })?;
@@ -2310,8 +2439,14 @@ pub fn json_to_ison_canonical(json_text: &str) -> Result<String> {
         doc.blocks.push(block);
     }
 
-    // Return canonical ISON (field-sorted, row-sorted output)
-    Ok(dumps_canonical(&doc))
+    Ok(doc)
+}
+
+/// Convert JSON to canonical ISON format (requires serde feature)
+#[cfg(feature = "serde")]
+pub fn json_to_ison_canonical(json_text: &str) -> Result<String> {
+    // Canonical ISON (field-sorted, row-sorted output)
+    dumps_canonical(&json_to_document(json_text)?)
 }
 
 /// Convert ISON to JSON format (requires serde feature)
@@ -2393,7 +2528,7 @@ id name email
 2 Bob bob@example.com"#;
 
         let doc = parse(original).unwrap();
-        let serialized = dumps(&doc, true);
+        let serialized = dumps(&doc, true).unwrap();
         let doc2 = parse(&serialized).unwrap();
 
         assert_eq!(doc2.get("users").unwrap().len(), 2);
@@ -2422,12 +2557,12 @@ id name email
         // Emails are emitted bare: only 'ident.ident' shapes could be misread
         // as a block header, so quoting every dotted value would waste tokens
         // and diverge from the other implementations.
-        let comma_output = dumps_with_delimiter(&doc, false, ",");
+        let comma_output = dumps_with_delimiter(&doc, false, ",").unwrap();
         assert!(comma_output.contains("id,name,email"));
         assert!(comma_output.contains("1,Alice,alice@example.com"));
 
         // Test with default space delimiter
-        let space_output = dumps_with_delimiter(&doc, false, " ");
+        let space_output = dumps_with_delimiter(&doc, false, " ").unwrap();
         assert!(space_output.contains("id name email"));
         assert!(space_output.contains("1 Alice alice@example.com"));
     }
@@ -2692,7 +2827,7 @@ id name email
         let mut row = Row::new();
         row.insert("a".to_string(), Value::String("#tag".to_string()));
         let doc = make_string_block("table", "t", &["a"], vec![row.clone()]);
-        let parsed = parse(&dumps(&doc, false)).unwrap();
+        let parsed = parse(&dumps(&doc, false).unwrap()).unwrap();
         assert_eq!(parsed.blocks[0].rows, vec![row]);
 
         // A quoted value containing '#' mid-string is data, not a comment
@@ -2709,7 +2844,7 @@ id name email
         row.insert("a".to_string(), Value::String("x\\".to_string()));
         row.insert("b".to_string(), Value::String("a #b".to_string()));
         let doc = make_string_block("table", "t", &["a", "b"], vec![row.clone()]);
-        let out = dumps(&doc, false);
+        let out = dumps(&doc, false).unwrap();
         let parsed = parse(&out)
             .unwrap_or_else(|e| panic!("round-trip parse failed ({}) for {:?}", e, out));
         assert_eq!(parsed.blocks[0].rows, vec![row], "corrupted by {:?}", out);
@@ -2730,7 +2865,7 @@ id name email
             })
             .collect();
         let doc = make_string_block("table", "t", &["v"], header_shaped.clone());
-        let out = dumps(&doc, false);
+        let out = dumps(&doc, false).unwrap();
         let parsed = parse(&out)
             .unwrap_or_else(|e| panic!("parse failed ({}) for {:?}", e, out));
         assert_eq!(
@@ -2781,7 +2916,7 @@ id name email
             }
 
             let doc = make_string_block("table", "t", &field_refs, rows.clone());
-            let out = dumps(&doc, false);
+            let out = dumps(&doc, false).unwrap();
             let parsed = parse(&out)
                 .unwrap_or_else(|e| panic!("trial {}: parse failed ({}) for {:?}", trial, e, out));
             assert_eq!(
@@ -2825,7 +2960,7 @@ id name email
         zulu_block.rows.push(zulu_row);
         doc.blocks.push(zulu_block);
 
-        let canonical = dumps_canonical(&doc);
+        let canonical = dumps_canonical(&doc).unwrap();
 
         // Blocks should be in ordinal order: table.active_users < table.users < table.zulu
         assert!(canonical.find("table.active_users").unwrap() < canonical.find("table.users").unwrap());
@@ -2856,7 +2991,7 @@ id name email
 
         doc.blocks.push(block);
 
-        let canonical = dumps_canonical(&doc);
+        let canonical = dumps_canonical(&doc).unwrap();
         let lines: Vec<&str> = canonical.split('\n').collect();
 
         // Find data lines (skip header and field line)
@@ -2895,7 +3030,7 @@ id name email
 
         doc.blocks.push(block);
 
-        let canonical = dumps_canonical(&doc);
+        let canonical = dumps_canonical(&doc).unwrap();
         let lines: Vec<&str> = canonical.split('\n').collect();
 
         // Find data lines
@@ -2929,9 +3064,9 @@ id name email
 
         doc.blocks.push(block);
 
-        let canonical1 = dumps_canonical(&doc);
+        let canonical1 = dumps_canonical(&doc).unwrap();
         let parsed = parse(&canonical1).unwrap();
-        let canonical2 = dumps_canonical(&parsed);
+        let canonical2 = dumps_canonical(&parsed).unwrap();
 
         assert_eq!(canonical1, canonical2);
     }
@@ -2950,7 +3085,7 @@ id name email
 
         doc.blocks.push(block);
 
-        let canonical = dumps_canonical(&doc);
+        let canonical = dumps_canonical(&doc).unwrap();
 
         // Should be single space between columns, not padded
         assert!(canonical.contains("short very_long_name"));
@@ -2978,7 +3113,7 @@ id name email
 
         doc.blocks.push(block);
 
-        let canonical = dumps_canonical(&doc);
+        let canonical = dumps_canonical(&doc).unwrap();
         let lines: Vec<&str> = canonical.split('\n').collect();
 
         // Find data lines that start with ':'
@@ -3039,7 +3174,7 @@ id name email
 
         doc.blocks.push(users);
 
-        let canonical = dumps_canonical(&doc);
+        let canonical = dumps_canonical(&doc).unwrap();
 
         // Expected order: blocks sorted (edges < users), fields sorted canonically
         // (id first, then alphabetically by UTF-8 bytes), rows sorted by key
@@ -3141,7 +3276,7 @@ id name email
 
         doc.blocks.push(block);
 
-        let canonical = dumps_canonical(&doc);
+        let canonical = dumps_canonical(&doc).unwrap();
 
         // Empty string should be quoted
         assert!(canonical.contains("\"\""));
@@ -3165,7 +3300,7 @@ id name email
 
         doc.blocks.push(block);
 
-        let canonical = dumps_canonical(&doc);
+        let canonical = dumps_canonical(&doc).unwrap();
 
         assert!(canonical.contains("id:string count:int"));
     }
@@ -3231,7 +3366,7 @@ id name email
 
         doc.blocks.push(utf16_div);
 
-        let canonical = dumps_canonical(&doc);
+        let canonical = dumps_canonical(&doc).unwrap();
 
         // Verify field ordering: id comes first, then others sorted by UTF-8 bytes
         assert!(

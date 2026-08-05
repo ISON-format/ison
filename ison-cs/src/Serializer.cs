@@ -38,6 +38,8 @@ namespace IsonParser
 
         private static string SerializeBlock(Block block, bool alignColumns, string delimiter)
         {
+            NameValidator.ValidateBlockNames(block);
+
             var lines = new List<string> { $"{block.Kind}.{block.Name}" };
 
             // Field line, with type annotations when known.
@@ -129,6 +131,8 @@ namespace IsonParser
 
         private static string SerializeBlockCanonical(Block block)
         {
+            NameValidator.ValidateBlockNames(block);
+
             var lines = new List<string> { $"{block.Kind}.{block.Name}" };
 
             var sortedFields = SortFieldsCanonical(block.Fields);
@@ -301,7 +305,11 @@ namespace IsonParser
                 }
                 else
                 {
-                    return null;
+                    // Dot path missed - fall back to the literal key. Both forms
+                    // cannot be present unless the caller built both, so this is
+                    // unambiguous, and without it a flat key holding a dot
+                    // silently loses its value at write time.
+                    return row.TryGetValue(path, out object? flat) ? flat : null;
                 }
             }
 

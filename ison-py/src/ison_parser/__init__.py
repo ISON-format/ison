@@ -237,6 +237,93 @@ class ISONTypeError(ISONError):
     pass
 
 
+class ISONNameError(ISONError):
+    """A block or field name has no unambiguous ISON encoding.
+
+    Raised at serialization, not construction: a Document is free to hold any
+    name in memory, but writing one that cannot be read back would produce a
+    file that silently parses as different data.
+    """
+    pass
+
+
+# =============================================================================
+# Name validation
+# =============================================================================
+#
+# Names arriving from loads() are safe by construction - the parser could not
+# have produced them otherwise. These rules exist for the other path: a
+# Document built in code, from from_dict() or by hand, whose names never had
+# to survive a parse.
+#
+# Each forbidden character is one the reader gives a meaning to:
+#
+#   space, tab   the field header is whitespace-separated, so 'first name'
+#                reads back as two fields
+#   newline, CR  ends the header line
+#   ':'          separates a field name from its type ('id:int')
+#   '|'          the ISONL field delimiter
+#   '#'          a comment, but only line-initial - 'a#b' is unambiguous and
+#                stays legal, so this is a prefix rule rather than a
+#                containment one
+#
+# '.' is deliberately absent for field names: dotted keys address nested
+# values and flat keys containing dots round-trip correctly.
+_NAME_FORBIDDEN_CHARS = ('\t', '\n', '\r', ' ')
+_FIELD_FORBIDDEN_CHARS = _NAME_FORBIDDEN_CHARS + (':', '|')
+
+_CHAR_NAMES = {' ': 'a space', '\t': 'a tab', '\n': 'a newline',
+               '\r': 'a carriage return'}
+
+
+def _describe(ch: str) -> str:
+    return _CHAR_NAMES.get(ch, f"{ch!r}")
+
+
+def _validate_field_name(name: str) -> None:
+    """Reject a field name that cannot be written and read back unchanged."""
+    for ch in _FIELD_FORBIDDEN_CHARS:
+        if ch in name:
+            raise ISONNameError(
+                f"field name {name!r} contains {_describe(ch)}, which has no "
+                f"unambiguous ISON encoding"
+            )
+    if name.startswith('#'):
+        raise ISONNameError(
+            f"field name {name!r} starts with '#', which begins a comment; "
+            f"'#' elsewhere in a name is fine"
+        )
+    if not name:
+        raise ISONNameError("field name is empty")
+
+
+def _validate_block_name(kind: str, name: str) -> None:
+    """Reject a block header that cannot be written and read back unchanged."""
+    for label, value in (('kind', kind), ('name', name)):
+        for ch in _NAME_FORBIDDEN_CHARS:
+            if ch in value:
+                raise ISONNameError(
+                    f"block {label} {value!r} contains {_describe(ch)}, which "
+                    f"has no unambiguous ISON encoding"
+                )
+        if not value:
+            raise ISONNameError(f"block {label} is empty")
+    # The header splits on the first '.', so a dot in the kind would move the
+    # boundary and rename the block. A dot in the name lands in the remainder
+    # and survives intact.
+    if '.' in kind:
+        raise ISONNameError(
+            f"block kind {kind!r} contains '.', which separates kind from name"
+        )
+
+
+def _validate_block_names(block: 'Block') -> None:
+    """Validate every name a block will emit."""
+    _validate_block_name(block.kind, block.name)
+    for field_name in block.fields:
+        _validate_field_name(field_name)
+
+
 # =============================================================================
 # Tokenizer
 # =============================================================================
@@ -664,6 +751,8 @@ class Serializer:
     @classmethod
     def _serialize_block_canonical(cls, block: Block) -> str:
         """Serialize a single block in canonical form (sorted rows and fields, no alignment)"""
+        _validate_block_names(block)
+
         lines = []
 
         # Header
@@ -814,6 +903,8 @@ class Serializer:
     @classmethod
     def _serialize_block(cls, block: Block, align_columns: bool, delimiter: str = ' ') -> str:
         """Serialize a single block"""
+        _validate_block_names(block)
+
         lines = []
 
         # Header
@@ -1536,7 +1627,14 @@ class ISONLSerializer:
 
     @classmethod
     def _validate_envelope(cls, block) -> None:
-        """Reject kind/name/fields that cannot survive an ISONL round-trip"""
+        """Reject kind/name/fields that cannot survive an ISONL round-trip.
+
+        The shared ISON name rules apply here too - a name unwritable in ISON
+        is unwritable in ISONL. ISONL then adds its own: the quote and
+        backslash that its value escaping gives meaning to.
+        """
+        _validate_block_names(block)
+
         for label, value in (('kind', block.kind), ('name', block.name)):
             if not value:
                 raise ISONError(f"ISONL block {label} must be non-empty")
@@ -1943,6 +2041,7 @@ __all__ = [
     'ISONError',
     'ISONSyntaxError',
     'ISONTypeError',
+    'ISONNameError',
     'ISONLRecord',
     'ISONLParser',
     'ISONLSerializer',

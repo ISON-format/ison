@@ -242,6 +242,11 @@ namespace IsonParser
 
         private static void ValidateEnvelope(Block block)
         {
+            // The shared ISON name rules apply here too - a name unwritable in
+            // ISON is unwritable in ISONL. ISONL then adds its own: the quote
+            // and backslash that its value escaping gives meaning to.
+            NameValidator.ValidateBlockNames(block);
+
             ValidateEnvelopePart("kind", block.Kind);
             ValidateEnvelopePart("name", block.Name);
 

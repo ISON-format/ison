@@ -229,6 +229,104 @@
         }
     }
 
+    /**
+     * A block or field name has no unambiguous ISON encoding.
+     *
+     * Raised at serialization, not construction: a Document may hold any name
+     * in memory, but writing one that cannot be read back would produce a file
+     * that silently parses as different data.
+     */
+    class ISONNameError extends ISONError {
+        constructor(message) {
+            super(message);
+            this.name = 'ISONNameError';
+        }
+    }
+
+    // =============================================================================
+    // Name validation
+    // =============================================================================
+    //
+    // Names from loads() are safe by construction - the parser could not have
+    // produced them otherwise. These rules exist for the other path: a Document
+    // built in code whose names never had to survive a parse.
+    //
+    // Each forbidden character is one the reader gives a meaning to:
+    //
+    //   space, tab   the field header is whitespace-separated, so 'first name'
+    //                reads back as two fields
+    //   newline, CR  ends the header line
+    //   ':'          separates a field name from its type ('id:int')
+    //   '|'          the ISONL field delimiter
+    //   '#'          a comment, but only line-initial - 'a#b' is unambiguous
+    //                and stays legal, so this is a prefix rule
+    //
+    // '.' is deliberately absent for field names: dotted keys address nested
+    // values and flat keys containing dots round-trip correctly.
+    const NAME_FORBIDDEN_CHARS = ['\t', '\n', '\r', ' '];
+    const FIELD_FORBIDDEN_CHARS = [...NAME_FORBIDDEN_CHARS, ':', '|'];
+
+    const CHAR_NAMES = {
+        ' ': 'a space', '\t': 'a tab', '\n': 'a newline', '\r': 'a carriage return',
+    };
+
+    function describeChar(ch) {
+        return CHAR_NAMES[ch] || JSON.stringify(ch);
+    }
+
+    /** Reject a field name that cannot be written and read back unchanged. */
+    function validateFieldName(name) {
+        for (const ch of FIELD_FORBIDDEN_CHARS) {
+            if (name.includes(ch)) {
+                throw new ISONNameError(
+                    `field name ${JSON.stringify(name)} contains ${describeChar(ch)}, ` +
+                    `which has no unambiguous ISON encoding`
+                );
+            }
+        }
+        if (name.startsWith('#')) {
+            throw new ISONNameError(
+                `field name ${JSON.stringify(name)} starts with '#', which begins a ` +
+                `comment; '#' elsewhere in a name is fine`
+            );
+        }
+        if (!name) {
+            throw new ISONNameError('field name is empty');
+        }
+    }
+
+    /** Reject a block header that cannot be written and read back unchanged. */
+    function validateBlockName(kind, name) {
+        for (const [label, value] of [['kind', kind], ['name', name]]) {
+            for (const ch of NAME_FORBIDDEN_CHARS) {
+                if (value.includes(ch)) {
+                    throw new ISONNameError(
+                        `block ${label} ${JSON.stringify(value)} contains ${describeChar(ch)}, ` +
+                        `which has no unambiguous ISON encoding`
+                    );
+                }
+            }
+            if (!value) {
+                throw new ISONNameError(`block ${label} is empty`);
+            }
+        }
+        // The header splits on the first '.', so a dot in the kind would move
+        // the boundary and rename the block. A dot in the name survives.
+        if (kind.includes('.')) {
+            throw new ISONNameError(
+                `block kind ${JSON.stringify(kind)} contains '.', which separates kind from name`
+            );
+        }
+    }
+
+    /** Validate every name a block will emit. */
+    function validateBlockNames(block) {
+        validateBlockName(block.kind, block.name);
+        for (const field of block.fields) {
+            validateFieldName(field);
+        }
+    }
+
     // =============================================================================
     // Tokenizer
     // =============================================================================
@@ -637,6 +735,8 @@
         }
 
         static _serializeBlock(block, alignColumns) {
+            validateBlockNames(block);
+
             const lines = [];
 
             // Header
@@ -702,7 +802,21 @@
             return widths;
         }
 
+        /**
+         * Get a value from a nested object using a dot-path.
+         *
+         * A field name containing '.' is a dot path, so `a.b` normally reads
+         * `obj.a.b`. When that path is absent but the literal key `'a.b'` is
+         * present, the flat key wins instead of the row emitting null. Both
+         * forms cannot be present unless the caller built both, so the
+         * fallback is unambiguous, and without it a flat key holding a dot
+         * silently loses its value at write time.
+         */
         static _getNestedValue(obj, path) {
+            if (!path.includes('.')) {
+                return (obj && typeof obj === 'object' && path in obj) ? obj[path] : null;
+            }
+
             const parts = path.split('.');
             let current = obj;
 
@@ -710,6 +824,10 @@
                 if (current && typeof current === 'object' && part in current) {
                     current = current[part];
                 } else {
+                    // Dot path missed - fall back to the literal key.
+                    if (obj && typeof obj === 'object' && path in obj) {
+                        return obj[path];
+                    }
                     return null;
                 }
             }
@@ -846,6 +964,8 @@
          * @returns {string} Canonical ISON block
          */
         static _serializeBlockCanonical(block) {
+            validateBlockNames(block);
+
             const lines = [];
 
             // Header
@@ -1552,6 +1672,11 @@
          * Reject kind/name/fields that cannot survive an ISONL round-trip
          */
         static _validateEnvelope(block) {
+            // The shared ISON name rules apply here too - a name unwritable in
+            // ISON is unwritable in ISONL. ISONL then adds its own: the quote
+            // and backslash that its value escaping gives meaning to.
+            validateBlockNames(block);
+
             for (const [label, value] of [['kind', block.kind], ['name', block.name]]) {
                 if (!value) {
                     throw new ISONError(`ISONL block ${label} must be non-empty`);
@@ -1875,6 +2000,7 @@
         Document,
         ISONError,
         ISONSyntaxError,
+        ISONNameError,
         ISONLRecord,
         ISONLParser,
         ISONLSerializer,

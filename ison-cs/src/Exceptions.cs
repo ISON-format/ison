@@ -37,4 +37,17 @@ namespace IsonParser
     {
         public IsonTypeException(string message) : base(message) { }
     }
+
+    /// <summary>
+    /// A block or field name has no unambiguous ISON encoding.
+    /// </summary>
+    /// <remarks>
+    /// Thrown at serialization, not construction: a Document may hold any name
+    /// in memory, but writing one that cannot be read back would produce a file
+    /// that silently parses as different data.
+    /// </remarks>
+    public class IsonNameException : IsonException
+    {
+        public IsonNameException(string message) : base(message) { }
+    }
 }

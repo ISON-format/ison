@@ -182,7 +182,22 @@ export class Document {
 // Parser
 // =============================================================================
 
-export class ISONSyntaxError extends Error {
+/**
+ * Base for every error this library raises.
+ *
+ * ison-py and ison-parser have had this base since the start; ison-ts was the
+ * outlier, which meant `catch (e) { if (e instanceof ...) }` could not be
+ * written once for the family. Adding it is backward compatible: an
+ * ISONSyntaxError is still an Error and still an ISONSyntaxError.
+ */
+export class ISONError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ISONError";
+  }
+}
+
+export class ISONSyntaxError extends ISONError {
   constructor(
     message: string,
     public readonly line?: number,
@@ -190,6 +205,104 @@ export class ISONSyntaxError extends Error {
   ) {
     super(line !== undefined ? `Line ${line}: ${message}` : message);
     this.name = "ISONSyntaxError";
+  }
+}
+
+/**
+ * A block or field name has no unambiguous ISON encoding.
+ *
+ * Thrown at serialization, not construction: a Document may hold any name in
+ * memory, but writing one that cannot be read back would produce a file that
+ * silently parses as different data.
+ */
+export class ISONNameError extends ISONError {
+  constructor(message: string) {
+    super(message);
+    this.name = "ISONNameError";
+  }
+}
+
+// =============================================================================
+// Name validation
+// =============================================================================
+//
+// Names from loads() are safe by construction - the parser could not have
+// produced them otherwise. These rules exist for the other path: a Document
+// built in code whose names never had to survive a parse.
+//
+// Each forbidden character is one the reader gives a meaning to:
+//
+//   space, tab   the field header is whitespace-separated, so 'first name'
+//                reads back as two fields
+//   newline, CR  ends the header line
+//   ':'          separates a field name from its type ('id:int')
+//   '|'          the ISONL field delimiter
+//   '#'          a comment, but only line-initial - 'a#b' is unambiguous and
+//                stays legal, so this is a prefix rule
+//
+// '.' is deliberately absent for field names: dotted keys address nested
+// values and flat keys containing dots round-trip correctly.
+const NAME_FORBIDDEN_CHARS = ["\t", "\n", "\r", " "];
+const FIELD_FORBIDDEN_CHARS = [...NAME_FORBIDDEN_CHARS, ":", "|"];
+
+const CHAR_NAMES: Record<string, string> = {
+  " ": "a space", "\t": "a tab", "\n": "a newline", "\r": "a carriage return",
+};
+
+function describeChar(ch: string): string {
+  return CHAR_NAMES[ch] ?? JSON.stringify(ch);
+}
+
+/** Reject a field name that cannot be written and read back unchanged. */
+export function validateFieldName(name: string): void {
+  for (const ch of FIELD_FORBIDDEN_CHARS) {
+    if (name.includes(ch)) {
+      throw new ISONNameError(
+        `field name ${JSON.stringify(name)} contains ${describeChar(ch)}, ` +
+        `which has no unambiguous ISON encoding`
+      );
+    }
+  }
+  if (name.startsWith("#")) {
+    throw new ISONNameError(
+      `field name ${JSON.stringify(name)} starts with '#', which begins a ` +
+      `comment; '#' elsewhere in a name is fine`
+    );
+  }
+  if (!name) {
+    throw new ISONNameError("field name is empty");
+  }
+}
+
+/** Reject a block header that cannot be written and read back unchanged. */
+export function validateBlockName(kind: string, name: string): void {
+  for (const [label, value] of [["kind", kind], ["name", name]] as const) {
+    for (const ch of NAME_FORBIDDEN_CHARS) {
+      if (value.includes(ch)) {
+        throw new ISONNameError(
+          `block ${label} ${JSON.stringify(value)} contains ${describeChar(ch)}, ` +
+          `which has no unambiguous ISON encoding`
+        );
+      }
+    }
+    if (!value) {
+      throw new ISONNameError(`block ${label} is empty`);
+    }
+  }
+  // The header splits on the first '.', so a dot in the kind would move the
+  // boundary and rename the block. A dot in the name survives.
+  if (kind.includes(".")) {
+    throw new ISONNameError(
+      `block kind ${JSON.stringify(kind)} contains '.', which separates kind from name`
+    );
+  }
+}
+
+/** Validate every name a block will emit. */
+export function validateBlockNames(block: Block): void {
+  validateBlockName(block.kind, block.name);
+  for (const field of block.fields) {
+    validateFieldName(field);
   }
 }
 
@@ -708,6 +821,8 @@ class Serializer {
   }
 
   private serializeBlock(block: Block): string {
+    validateBlockNames(block);
+
     const lines: string[] = [];
 
     // Header
@@ -859,6 +974,8 @@ class Serializer {
   }
 
   private serializeBlockCanonical(block: Block): string {
+    validateBlockNames(block);
+
     const lines: string[] = [];
 
     // Header
@@ -1104,6 +1221,11 @@ class ISONLSerializer {
    * Reject kind/name/fields that cannot survive an ISONL round-trip
    */
   private validateEnvelope(block: Block): void {
+    // The shared ISON name rules apply here too - a name unwritable in ISON is
+    // unwritable in ISONL. ISONL then adds its own: the quote and backslash
+    // that its value escaping gives meaning to.
+    validateBlockNames(block);
+
     const parts: Array<[string, string]> = [["kind", block.kind], ["name", block.name]];
     for (const [label, value] of parts) {
       if (!value) {
