@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.1.0] - 2026-08-05
+
+> **Breaking.** Serialization now rejects block and field names that cannot be
+> written and read back as themselves. Documents holding such a name used to
+> serialize into bytes that parsed as different data; they now raise. Names
+> obtained by parsing are unaffected — the parser could never produce one.
+
+### Fixed
+
+- **Unwritable Names Were Silently Emitted (CRITICAL)**: a field named `first name` serialized to a header reading `first name`, which parses back as two fields — a document written by one program became different data when read by another, with no error at either end. The same held for `:` (the type separator), `|` (the ISONL delimiter), a line-initial `#` (a comment), and a space in a block name. Serialization now rejects them. Still legal, and pinned by corpus cases: `.` in a field name, `#` after the first character, and `.` in a block name.
+- **Name Rules Shared Across Serializers**: the rules lived only in the ISONL envelope check, so regular and canonical ISON emitted unwritable names unchecked. A name unwritable in ISON is unwritable in ISONL, so both now share one implementation; ISONL keeps its own additional rules for the quote and backslash its value escaping needs.
+- **Flat Row Keys Containing A Dot Were Destroyed**: a field named `a.b` was resolved purely as a dot path, so a row holding that literal key emitted `null` — the value was lost at write time, silently. The lookup now falls back to the literal key when the dot path does not resolve; genuinely nested values still take precedence. This was fixed in ison-py 1.0.5 but not ported, so it shipped in this package.
+- **ESM Bundle Reported A Stale Version**: the ESM build script hardcoded `1.0.2` while the package shipped `1.0.3`, so the bundle advertised a version that was never released. It now reads from package.json, and exports `ISONNameError`.
+
+### Testing
+
+- **built/ Corpus Now Runs Here**: the shared corpus has a third shape — a Document constructed rather than parsed, which is the only way to hold a name the parser could not produce. It previously ran only in a standalone harness that nothing invoked, which is why the bug above went unnoticed. It now runs as part of this package's own test suite.
+
+
 ## [1.0.3] - 2026-08-05
 
 > **Canonical bytes change.** Documents with tied key values or non-ASCII row

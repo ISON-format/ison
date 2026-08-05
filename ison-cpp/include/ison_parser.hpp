@@ -9,7 +9,7 @@
  * Compatibility: C++11 and later (auto-detects C++17 for std::optional)
  *
  * @author Mahesh Vaikri
- * @version 1.0.3
+ * @version 1.1.0
  */
 
 #ifndef ISON_PARSER_HPP
@@ -38,7 +38,7 @@
 namespace ison {
 
 // Version info
-static const char* VERSION = "1.0.3";
+static const char* VERSION = "1.1.0";
 
 // =============================================================================
 // Optional implementation for C++11/14

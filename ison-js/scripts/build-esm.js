@@ -9,6 +9,11 @@ const path = require('path');
 const srcPath = path.join(__dirname, '..', 'src', 'ison-parser.js');
 const distPath = path.join(__dirname, '..', 'dist', 'ison-parser.esm.js');
 
+// Read from package.json rather than hardcoding: this was pinned at 1.0.2
+// while the package shipped 1.0.3, so the ESM bundle reported a version that
+// had never been released.
+const { version } = require('../package.json');
+
 let content = fs.readFileSync(srcPath, 'utf8');
 
 // Replace the export section with ESM exports
@@ -24,6 +29,7 @@ export {
     Document,
     ISONError,
     ISONSyntaxError,
+    ISONNameError,
     ISONLRecord,
     ISONLParser,
     ISONLSerializer,
@@ -39,7 +45,7 @@ export {
     isonlStream,
 };
 
-export const version = '1.0.2';
+export const version = '${version}';
 
 export default {
     Reference,
@@ -48,6 +54,7 @@ export default {
     Document,
     ISONError,
     ISONSyntaxError,
+    ISONNameError,
     ISONLRecord,
     ISONLParser,
     ISONLSerializer,
@@ -61,7 +68,7 @@ export default {
     isonToISONL,
     isonlToISON,
     isonlStream,
-    version: '1.0.2'
+    version: '${version}'
 };
 `;
 

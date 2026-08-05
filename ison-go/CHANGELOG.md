@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.1.0] - 2026-08-05
+
+> **Breaking.** Serialization now rejects block and field names that cannot be
+> written and read back as themselves. Documents holding such a name used to
+> serialize into bytes that parsed as different data; they now raise. Names
+> obtained by parsing are unaffected — the parser could never produce one.
+
+> `Dumps`, `DumpsWithOptions` and `DumpsCanonical` now return
+> `(string, error)` instead of `string`. This is a compile error for callers,
+> which is the loudest available signal and cannot be missed.
+
+### Changed
+
+- **`Dumps` / `DumpsWithOptions` / `DumpsCanonical` Return `(string, error)`**: they returned a bare `string` with nowhere to report an unwritable name. `DumpsISONL` and `DumpsCanonicalISONL` already returned an error in this same package, so this makes the API consistent rather than introducing a new convention. `Dump` and `DumpWithOptions` propagate it.
+
+### Fixed
+
+- **Unwritable Names Were Silently Emitted (CRITICAL)**: a field named `first name` serialized to a header reading `first name`, which parses back as two fields — a document written by one program became different data when read by another, with no error at either end. The same held for `:` (the type separator), `|` (the ISONL delimiter), a line-initial `#` (a comment), and a space in a block name. Serialization now rejects them. Still legal, and pinned by corpus cases: `.` in a field name, `#` after the first character, and `.` in a block name.
+- **Name Rules Shared Across Serializers**: the rules lived only in the ISONL envelope check, so regular and canonical ISON emitted unwritable names unchecked. A name unwritable in ISON is unwritable in ISONL, so both now share one implementation; ISONL keeps its own additional rules for the quote and backslash its value escaping needs.
+
+### Testing
+
+- **built/ Corpus Now Runs Here**: the shared corpus has a third shape — a Document constructed rather than parsed, which is the only way to hold a name the parser could not produce. It previously ran only in a standalone harness that nothing invoked, which is why the bug above went unnoticed. It now runs as part of this package's own test suite.
+
+
 ## [1.0.2] - 2026-08-05
 
 > **Canonical bytes change.** Documents with tied key values or non-ASCII row

@@ -16,7 +16,7 @@
  *   const jsonObj = doc.toDict();
  *
  * Author: Mahesh Vaikri
- * Version: 1.0.3
+ * Version: 1.1.0
  */
 
 (function(global) {
