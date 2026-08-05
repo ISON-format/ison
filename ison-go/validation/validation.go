@@ -9,7 +9,7 @@ import (
 )
 
 // Version is the current version of the validation package
-const Version = "1.0.0"
+const Version = "1.0.2"
 
 // ValidationError represents a validation error with field path and message
 type ValidationError struct {

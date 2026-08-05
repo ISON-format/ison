@@ -12,7 +12,7 @@ import (
 )
 
 func TestVersion(t *testing.T) {
-	assert.Equal(t, "1.0.1", Version)
+	assert.Equal(t, "1.0.2", Version)
 }
 
 func TestParseSimpleTable(t *testing.T) {

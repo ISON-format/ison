@@ -16,7 +16,7 @@ import (
 )
 
 // Version is the current version of the ison-go package
-const Version = "1.0.1"
+const Version = "1.0.2"
 
 // ValueType represents the type of an ISON value
 type ValueType int

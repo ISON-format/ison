@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.3] - 2026-08-05
+
+> **Canonical bytes change.** Documents with tied key values or non-ASCII row
+> values serialize differently than in previous releases. This is the fix, not a
+> regression — the previous output depended on row insertion order. Anything
+> storing ISONCS hashes will see them move once.
+
+### Fixed
+
+- **Canonical Row Order Was Not Total (CRITICAL)**: canonical row order keyed on the first column only, so rows tying on that column fell back to input order. The same logical data serialized to different bytes depending on how the rows were built, breaking content addressing and prefix stability — the two properties canonical form exists for. Rows now sort on the full canonical field tuple, with nulls sorting last at every position rather than only the key column.
+- **Row Ordering Ignored UTF-8 Encoding**: row sorting compared values in the host language's native string order while field sorting compared UTF-8 bytes, so the two disagreed. In UTF-16 languages this ordered astral values differently from the reference — `"Ａ"` (U+FF21) must precede `"😀"` (U+1F600) by UTF-8 bytes, but UTF-16 puts the emoji's lead surrogate first. All seven implementations now agree.
+- **Canonical ISONL Duplicated The Row Sort**: ISONL carried its own copy of the row-ordering logic, so fixing canonical ISON silently missed it. Both forms now share one implementation.
+
 ## [1.0.2] - 2026-08-01
 
 ### Added

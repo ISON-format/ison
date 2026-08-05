@@ -15,7 +15,7 @@ Usage:
     users = parse_ison(ison_data, User)
 
 Author: Mahesh Vaikri
-Version: 1.0.0
+Version: 1.1.0
 """
 
 from .models import (
@@ -57,7 +57,7 @@ from .schema import (
     openapi_schema,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = [
     # Models
     "ISONModel",

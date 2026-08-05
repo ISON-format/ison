@@ -90,3 +90,6 @@ PAPA.md
 
 # VS Code extension builds (keep only source)
 ison-vscode/*.vsix
+
+# Website source (built and deployed separately)
+website/

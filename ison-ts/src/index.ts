@@ -5,7 +5,7 @@
  * ISON is a minimal, LLM-friendly data serialization format optimized for AI/ML workflows.
  */
 
-export const VERSION = "1.0.2";
+export const VERSION = "1.0.3";
 
 // =============================================================================
 // Types

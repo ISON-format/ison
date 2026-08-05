@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.0.5] - 2026-08-05
+
+> **Canonical bytes change.** Documents with tied key values or non-ASCII row
+> values serialize differently than in previous releases. This is the fix, not a
+> regression — the previous output depended on row insertion order. Anything
+> storing ISONCS hashes will see them move once.
+
+### Fixed
+
+- **Canonical Row Order Was Not Total (CRITICAL)**: canonical row order keyed on the first column only, so rows tying on that column fell back to input order. The same logical data serialized to different bytes depending on how the rows were built, breaking content addressing and prefix stability — the two properties canonical form exists for. Rows now sort on the full canonical field tuple, with nulls sorting last at every position rather than only the key column.
+- **Row Ordering Ignored UTF-8 Encoding**: row sorting compared values in the host language's native string order while field sorting compared UTF-8 bytes, so the two disagreed. In UTF-16 languages this ordered astral values differently from the reference — `"Ａ"` (U+FF21) must precede `"😀"` (U+1F600) by UTF-8 bytes, but UTF-16 puts the emoji's lead surrogate first. All seven implementations now agree.
+- **Canonical ISONL Duplicated The Row Sort**: ISONL carried its own copy of the row-ordering logic, so fixing canonical ISON silently missed it. Both forms now share one implementation.
+- **Flat Row Keys Containing A Dot Were Destroyed**: `_get_nested_value` treated a dotted field name purely as a nested path, so a row with the literal key `"a.b"` emitted `null`. It now falls back to the literal key when the dot path does not resolve; genuinely nested values still take precedence.
+
+### Performance
+
+- **Canonical Serialization Fast Path**: a first column that already distinguishes every row leaves no ties to break, so the remaining columns cannot affect the result. Detecting that is O(rows) against O(rows × columns) to build full sort keys. Canonical overhead measured on the project benchmark: +3.7% before this release's correctness fix, +35.4% with the naive fix, +8.7% with the fast path.
+
 ## [1.0.4] - 2026-08-01
 
 ### Added

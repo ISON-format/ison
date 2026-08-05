@@ -23,7 +23,7 @@ Usage:
     doc = loads_isonl(isonl_text)
 
 Author: Mahesh Vaikri
-Version: 1.0.4
+Version: 1.0.5
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Generator
 from pathlib import Path
 
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 __author__ = "Mahesh Vaikri"
 
 # =============================================================================
