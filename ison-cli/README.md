@@ -308,7 +308,8 @@ results = compare_formats(content, Format.JSON, model="gpt-4o")
 
 ## Links
 
-- [ISON Documentation](https://www.ison.dev)
+- [ISON format home](https://www.ison.dev)
+- [Documentation](https://www.getison.com)
 - [ISON Specification](https://www.ison.dev/spec.html)
 - [Python Package](https://pypi.org/project/ison-py/)
 - [GitHub Repository](https://github.com/ISON-format/ison)

@@ -2,11 +2,8 @@
   <img src="images/ison_logo_git.png" alt="ISON Logo">
 </p>
 
-
 <p align="center">
-  <h2>
-  A minimal, token-efficient data format optimized for LLMs and Agentic AI workflows.
-  </h2>
+  <h2>A minimal, token-efficient data format optimized for LLMs and Agentic AI workflows.</h2>
 </p>
 
 <p align="center">
@@ -16,33 +13,26 @@
   <a href="https://pypi.org/project/ison-py"><img src="https://img.shields.io/pypi/v/ison-py.svg" alt="PyPI"></a>
   <a href="https://crates.io/crates/ison-rs"><img src="https://img.shields.io/crates/v/ison-rs.svg" alt="Crates.io"></a>
 </p>
-<p align="center"> Author: Mahesh Vaikri</p>
-
----
 
 <p align="center">
-  <em>
-    ISON (Interchange Simple Object Notation) is a minimal data interchange format optimized for Large Language Models.
-    It is easy for humans to read and write. It is easy for LLMs to understand and generate.
-    It is based on familiar tabular and relational patterns that language models have seen billions of times in training data.
-  </em>
-</p>
-
-<p align="center">
-  <em>
-    ISON is a text format that is completely language independent but represents data in a way that maximizes token efficiency
-    and minimizes cognitive load for AI systems. These properties make ISON an ideal data interchange format for AI and LLM workflows.
-  </em>
+  <a href="https://www.ison.dev">www.ison.dev</a> &nbsp;•&nbsp;
+  <a href="https://www.getison.com">Documentation</a> &nbsp;•&nbsp;
+  <a href="https://www.ison.dev/spec.html">Specification</a> &nbsp;•&nbsp;
+  <a href="benchmark/BENCHMARK_300.md">Benchmarks</a>
 </p>
 
 ---
 
-## Why ISON?
+## You are paying for punctuation
 
-ISON reduces token usage by **30-70%** compared to JSON while remaining human-readable and LLM-friendly.
+Every time you send data to a language model, you pay by the token. JSON spends
+a remarkable share of those tokens on syntax that carries no information — the
+same key repeated on every record, braces, colons, quotation marks.
+
+Here is the same data twice.
 
 ```
-JSON (87 tokens)                    ISON (34 tokens)
+JSON — 87 tokens                    ISON — 34 tokens
 ─────────────────                   ─────────────────
 {                                   table.users
   "users": [                        id:int name:string email active:bool
@@ -68,536 +58,359 @@ JSON (87 tokens)                    ISON (34 tokens)
 }
 ```
 
-**Perfect for:**
-- Multi-agent systems
-- RAG pipelines
-- Graph databases
-- Token-constrained AI/ML, LLM, Agentic AI workflows
-- LLM function calling
+Three records. The field names appear **once** instead of three times. Nothing
+was abbreviated and nothing was lost — and the result is still something you can
+read over someone's shoulder.
+
+Across a 300-question benchmark that came to **72% fewer tokens than JSON**,
+with accuracy holding at 88%.
+
+## Why a model reads this well
+
+The instinct is that a denser format must be harder for a model to parse. The
+opposite turned out to be true, and the reason is mundane.
+
+Language models have seen tables billions of times: CSV, markdown tables, SQL
+result sets, spreadsheet dumps. A header row followed by aligned data rows is
+one of the most familiar shapes in the training distribution. ISON leans on that
+familiarity instead of inventing syntax to be learned.
+
+Deeply nested JSON asks a model to track brace depth across a long span of text
+— exactly the bookkeeping that degrades with distance.
+
+```mermaid
+flowchart LR
+    A[Your data<br/>DB, API, documents] -->|serialize| B[ISON]
+    B -->|more fits in context| C[LLM]
+    C -->|generates| D[ISON]
+    D -->|parse| E[Your application]
+    B -.->|canonical form| F[(Content-addressed<br/>cache)]
+    F -.->|stable prefix| C
+```
+
+## Where it earns its place
+
+- **Multi-agent systems** — agents pass state constantly; every message is tokens
+- **RAG pipelines** — more retrieved context in the same window
+- **Graph databases** — references (`:id`) are first-class, so edges stay compact
+- **Function calling** — structured arguments without brace-counting
+- **Long-running agents** — canonical form keeps prompt prefixes byte-stable, so caches actually hit
 
 ---
 
-## Quick Start
+## Quick start
 
-### Installation
-
-**JavaScript/TypeScript:**
 ```bash
-npm install ison-parser    # JavaScript
-npm install ison-ts        # TypeScript with full types (includes validation)
+npm install ison-parser        # JavaScript
+npm install ison-ts            # TypeScript
+pip install ison-py            # Python
+cargo add ison-rs              # Rust
+go get github.com/ISON-format/ison/ison-go
+dotnet add package Ison.Parser # C#
+# C++ is header-only — copy include/ison_parser.hpp
 ```
 
-**Python:**
-```bash
-pip install ison-py        # Parser (includes validation subpackage)
-```
-
-**Rust:**
-```toml
-[dependencies]
-ison-rs = "1.0"
-```
-
-**C++ (Header-only):**
-```bash
-# Just copy the header
-cp ison-cpp/include/ison_parser.hpp /your/project/
-```
-
-**Go:**
-```bash
-go get github.com/ISON-format/ison/ison-go  # Includes validation subpackage
-```
-
-### Usage Examples
-
-**JavaScript:**
-```javascript
-import { parse, dumps, toJSON } from 'ison-parser';
-
-const doc = parse(`
-table.users
-id:int name:string active:bool
-1 Alice true
-2 Bob false
-`);
-
-console.log(doc.users.rows);
-// [{ id: 1, name: 'Alice', active: true }, ...]
-
-console.log(toJSON(doc));
-// Standard JSON output
-```
-
-**Python:**
 ```python
-from ison_py import parse, dumps, to_json
+from ison_parser import loads, dumps
 
-doc = parse("""
+doc = loads("""
 table.users
 id:int name:string active:bool
 1 Alice true
 2 Bob false
 """)
 
-for row in doc['users']['rows']:
-    print(f"{row['id']}: {row['name']}")
-
-# Convert to JSON
-print(to_json(doc))
+print(doc["users"].rows[0])     # {'id': 1, 'name': 'Alice', 'active': True}
+print(dumps(doc))               # back to ISON
+print(doc.to_json())            # or to JSON
 ```
 
-**Rust:**
-```rust
-use ison_rs::{parse, dumps};
-
-let doc = parse(r#"
-table.users
-id:int name:string active:bool
-1 Alice true
-2 Bob false
-"#)?;
-
-let users = doc.get("users").unwrap();
-for row in &users.rows {
-    let name = row.get("name").and_then(|v| v.as_str()).unwrap();
-    println!("{}", name);
-}
-```
-
-**C++:**
-```cpp
-#include "ison_parser.hpp"
-
-auto doc = ison::parse(R"(
-table.users
-id:int name:string active:bool
-1 Alice true
-2 Bob false
-)");
-
-for (const auto& row : doc["users"].rows) {
-    std::cout << ison::as_string(row.at("name")) << std::endl;
-}
-```
-
-**Go:**
-```go
-import "github.com/ISON-format/ison/ison-go"
-
-doc, _ := ison.Parse(`
-table.users
-id:int name:string active:bool
-1 Alice true
-2 Bob false
-`)
-
-users, _ := doc.Get("users")
-for _, row := range users.Rows {
-    name, _ := row["name"].AsString()
-    fmt.Println(name)
-}
-```
+Every implementation exposes the same shape: `loads` / `dumps`, plus
+`loads_isonl` / `dumps_isonl` for the streaming form.
 
 ---
 
-## ISON Format
+## The format in one screen
 
 ```
 # Comments start with #
 
-table.users                        # Block: kind.name
-id:int name:string email active:bool   # Fields with optional types
-1 Alice alice@example.com true     # Data rows (space-separated)
-2 "Bob Smith" bob@example.com false    # Quoted strings for spaces
-3 ~ ~ true                         # ~ or null for null values
+table.users                            # Block header: kind.name
+id:int name:string email active:bool   # Fields, with optional types
+1 Alice alice@example.com true         # Rows, space-separated
+2 "Bob Smith" bob@example.com false    # Quote anything containing spaces
+3 ~ ~ true                             # ~ or null for null
 
 table.orders
 id user_id product
-1 :1 Widget                        # :1 = reference to id 1
-2 :user:42 Gadget                  # :user:42 = namespaced reference
+1 :1 Widget                            # :1  → reference to id 1
+2 :user:42 Gadget                      # :user:42 → namespaced reference
 
-object.config                      # Single-row object block
+object.config                          # Single-row block
 key value
 debug true
----                                # Summary separator
-count 100                          # Summary row
+---                                    # Summary separator
+count 100
 ```
 
-### ISONL (Streaming Format)
+Anatomy of a block:
 
-For large datasets, use line-based ISONL where each line is self-contained:
+```mermaid
+flowchart TD
+    H["<b>table.users</b><br/><i>kind.name</i>"]
+    F["<b>id:int&nbsp;&nbsp;name:string&nbsp;&nbsp;active:bool</b><br/><i>field names and optional types — declared once</i>"]
+    R["<b>1&nbsp;Alice&nbsp;true</b><br/><b>2&nbsp;Bob&nbsp;false</b><br/><i>rows, positional</i>"]
+    H --> F --> R
+```
+
+### Features
+
+| Feature | Description |
+|---|---|
+| **Tables** | Structured data with typed columns |
+| **Objects** | Single-row key-value blocks |
+| **References** | `:id`, `:type:id`, `:RELATIONSHIP:id` |
+| **Type annotations** | `field:int`, `field:string`, `field:bool`, `field:float` |
+| **Computed fields** | `field:computed` for derived values |
+| **ISONL streaming** | Line-based format for large datasets |
+| **JSON export** | Convert in either direction |
+| **Round-trip** | Parse and serialize without data loss |
+| **ISONCS** | Deterministic output for content addressing and caching |
+
+### ISONL — the streaming form
+
+For data too large to hold at once, every line stands alone:
 
 ```
 table.users|id name email|1 Alice alice@example.com
 table.users|id name email|2 Bob bob@example.com
 ```
 
----
-
-## Packages
-
-### Parser Libraries
-
-| Ecosystem | Package | Validation | Tests |
-|-----------|---------|------------|-------|
-| **NPM** | [ison-parser](https://www.npmjs.com/package/ison-parser) | Built-in (`ison-parser/validation`) | 80 |
-| **NPM** | [ison-ts](https://www.npmjs.com/package/ison-ts) | Built-in (`ison-ts/validation`) | 23 |
-| **PyPI** | [ison-py](https://pypi.org/project/ison-py) | Built-in (`ison_parser.validation`) | 212+ |
-| **Crates.io** | [ison-rs](https://crates.io/crates/ison-rs) | [isonantic-rs](https://crates.io/crates/isonantic-rs) | 10 |
-| **C++** | ison-cpp | isonantic-cpp | 30 |
-| **Go** | [ison-go](https://pkg.go.dev/github.com/ISON-format/ison/ison-go) | Built-in (`ison-go/validation`) | 40+ |
-
-### Tools & Integrations
-
-| Ecosystem | Package | Description |
-|-----------|---------|-------------|
-| **PyPI** | [ison-cli](https://pypi.org/project/ison-cli) | Command-line converter & validator |
-| **VS Code** | [ison-lang](https://marketplace.visualstudio.com/items?itemName=ison-dev.ison-lang) | Syntax highlighting & snippets |
-| **NPM** | [n8n-nodes-ison](https://www.npmjs.com/package/n8n-nodes-ison) | n8n workflow automation node |
-
-**Total: 395+ tests passing across 5 ecosystems**
-
-> **Note:** Validation is integrated into parser packages for JavaScript, TypeScript, Python, and Go. For Rust and C++, validation remains in separate packages.
+Same data, same types — but you can process it a line at a time, or append
+forever without rewriting a header.
 
 ---
 
-## Features
+## ISONCS — the same data always produces the same bytes
 
-| Feature | Description |
-|---------|-------------|
-| **Tables** | Structured data with typed columns |
-| **Objects** | Single-row key-value blocks |
-| **References** | `:id`, `:type:id`, `:RELATIONSHIP:id` |
-| **Type Annotations** | `field:int`, `field:string`, `field:bool`, `field:float` |
-| **Computed Fields** | `field:computed` for derived values |
-| **ISONL Streaming** | Line-based format for large datasets |
-| **JSON Export** | Convert ISON to JSON |
-| **Roundtrip** | Parse and serialize without data loss |
-| **ISONCS** | Deterministic canonical serialization for content addressing and caching |
+Two programs holding identical data should produce identical output. That sounds
+obvious, and it is surprisingly easy to get wrong: hash maps iterate in arbitrary
+order, so field order drifts between languages and between runs.
 
----
+**ISON Canonical Serialization** removes every degree of freedom:
 
-## ISONCS — Canonical Serialization
+```mermaid
+flowchart LR
+    A[Document<br/>any field or row order] --> B[Sort blocks<br/>by kind.name]
+    B --> C[Sort fields<br/>id first, then UTF-8 bytes]
+    C --> D[Sort rows<br/>full column tuple]
+    D --> E[Fixed spacing<br/>no alignment]
+    E --> F[Identical bytes<br/>in all seven languages]
+```
 
-ISONCS (ISON Canonical Serialization) produces **byte-identical output** across all implementations when serializing logically identical data. Perfect for:
+Which buys three things:
 
-- **Content addressing** (checksums, deduplication, distributed tracing)
-- **LLM prompt caching** (deterministic output + cache hit guarantees)
-- **Git diffs** (meaningful diffs when serialization is deterministic)
-- **Cross-language verification** (golden fixtures ensure implementations stay in sync)
+| Property | What it enables |
+|---|---|
+| **Byte-identical output** | Hash a document to address it — equal data, equal hash |
+| **Stable prefixes** | LLM prompt caches hit instead of missing on reordered fields |
+| **Meaningful diffs** | Version-control your data without spurious churn |
 
 ```javascript
-import { parse, dumps_canonical } from 'ison-parser';
+import { loads, dumpsCanonical } from 'ison-parser';
 
-const doc = parse(`
-table.users
-id name
-2 Bob
-1 Alice
-`);
-
-// Canonical output has sorted fields and rows, byte-identical across all implementations
-console.log(dumps_canonical(doc));
-// Regardless of input order:
+// Built in different orders, byte-identical output
+dumpsCanonical(loads("table.users\nid name\n2 Bob\n1 Alice"))
 // table.users
 // id name
 // 1 Alice
 // 2 Bob
 ```
 
-**Key properties:**
+The rules, in full:
+
 - Blocks sorted ordinal-string by `kind.name`
-- Rows sorted ordinal-string by first column value (key)
-- **Fields sorted alphabetically by UTF-8 bytes** (`id` field first if present) — ensures byte-identical output across implementations with unordered hash tables (Rust HashMap, Go map, C# Dictionary)
+- Fields sorted by **UTF-8 bytes**, with `id` hoisted first when present
+- Rows sorted on the **full canonical column tuple**, nulls last at every position
 - Single-space delimiter, no alignment, no comments
-- Idempotent: `dumps_canonical(parse(dumps_canonical(doc))) == dumps_canonical(doc)`
+- Idempotent — `dumps_canonical(parse(dumps_canonical(doc))) == dumps_canonical(doc)`
 
-**All seven implementations produce byte-identical output**, enforced on every build by the
-[cross-language parity corpus](./benchmark/parity/) — 16 cases x 4 renderings, generated from
-the ison-py reference:
-- Python (ison-py): UTF-8 byte comparison
-- Rust (ison-rs): `as_bytes()` comparison
-- JavaScript (ison-parser): TextEncoder byte arrays
-- TypeScript (ison-ts): TextEncoder byte arrays
-- C# (ison-cs): UTF8.GetBytes() comparison
-- Go (ison-go): bytes.Compare() native
-- C++ (ison-cpp): unsigned char cast for UTF-8
+Sorting by UTF-8 bytes rather than native string order is the subtle part.
+UTF-16 languages order astral characters differently, so `"Ａ"` (U+FF21) and
+`"😀"` (U+1F600) would otherwise sort one way in Python and the other in
+JavaScript. Every implementation is checked against a shared corpus that pins
+exactly this.
 
-See **[ISONCS Specification](./ISONCS.md)** for complete details.
+See the **[ISONCS specification](ISONCS.md)** for the complete rules.
 
 ---
 
-## Schema Validation (Built-in)
+## Seven implementations, one output
 
-Type-safe validation is now built into the parser packages with a fluent API:
-
-```typescript
-// TypeScript (ison-ts)
-import { validation } from 'ison-ts';
-const { i, document } = validation;
-
-const UserSchema = i.table('users', {
-  id: i.int(),
-  name: i.string().min(1).max(100),
-  email: i.string().email(),
-  active: i.boolean().default(true),
-});
-
-const doc = UserSchema.parse(data);
+```mermaid
+flowchart TD
+    S["<b>ISONCS specification</b>"] --> P["ison-py<br/><i>reference implementation</i>"]
+    P --> C["<b>benchmark/parity</b><br/>shared corpus<br/>16 cases × 4 renderings"]
+    C --> JS[ison-parser<br/>npm]
+    C --> TS[ison-ts<br/>npm]
+    C --> RS[ison-rs<br/>crates.io]
+    C --> GO[ison-go<br/>Go modules]
+    C --> CPP[ison-cpp<br/>header-only]
+    C --> CS[Ison.Parser<br/>NuGet]
 ```
 
+Every implementation runs that corpus on every build. A divergence in any
+language fails that language's test suite — parity is enforced, not assumed.
+
+### Parsers
+
+| Language | Package | Validation | Tests |
+|---|---|---|---|
+| Python | [ison-py](https://pypi.org/project/ison-py) | built in — `ison_parser.validation` | 234 |
+| JavaScript | [ison-parser](https://www.npmjs.com/package/ison-parser) | built in — `ison-parser/validation` | 194 |
+| TypeScript | [ison-ts](https://www.npmjs.com/package/ison-ts) | built in — `ison-ts/validation` | 156 |
+| C# | [Ison.Parser](https://www.nuget.org/packages/Ison.Parser) | — | 160 |
+| Go | [ison-go](https://pkg.go.dev/github.com/ISON-format/ison/ison-go) | built in — `ison-go/validation` | 93 |
+| Rust | [ison-rs](https://crates.io/crates/ison-rs) | [isonantic-rs](https://crates.io/crates/isonantic-rs) | 31 |
+| C++ | ison-cpp | isonantic-cpp | 102 parity checks |
+
+### Tools
+
+| Package | What it does |
+|---|---|
+| [ison-cli](https://pypi.org/project/ison-cli) | `ison` — convert, validate and inspect from the shell |
+| [ison-lang](https://marketplace.visualstudio.com/items?itemName=ison-dev.ison-lang) | VS Code syntax highlighting and snippets |
+| [n8n-nodes-ison](https://www.npmjs.com/package/n8n-nodes-ison) | n8n workflow automation node |
+
+---
+
+## Validation is built in
+
+Define a schema, get typed rows and real error messages:
+
 ```python
-# Python (ison-py)
 from ison_parser.validation import TableModel, Field
 
 class User(TableModel):
-    __ison_block__ = "table.users"
-    id: int = Field(primary_key=True)
-    name: str
-    email: str
-    active: bool = True
+    id = Field(int, required=True)
+    name = Field(str, min_length=1)
+    active = Field(bool, default=False)
 
-users = parse_ison(ison_data, User)
+users = User.parse(doc["users"])   # validated and typed
 ```
 
-```go
-// Go (ison-go)
-import "github.com/ISON-format/ison/ison-go/validation"
-
-userSchema := validation.I.Table("users", map[string]validation.Schema{
-    "id":     validation.I.Int(),
-    "name":   validation.I.String().Min(1).Max(100),
-    "email":  validation.I.String().Email(),
-    "active": validation.I.Bool().Default(true),
-})
-```
+The same API exists in JavaScript, TypeScript and Go. Rust and C++ keep
+validation in companion packages, because their module systems make merging it
+awkward.
 
 ---
 
-## Documentation
+## Benchmarks
 
-- **Website:** [www.ison.dev](https://www.ison.dev)
-- **Getting Started:** [www.getison.com](https://www.getison.com)
-- **Specification:** [ISON v1.0 Spec](https://www.ison.dev/spec.html)
-- **Playground:** [Interactive Demo](https://www.ison.dev/playground.html)
+300 questions across 20 datasets, measured with the GPT-4o tokenizer
+(`o200k_base`):
 
----
+| Format | Tokens | vs JSON | Accuracy | Accuracy / 1K tokens |
+|---|---|---|---|---|
+| **ISON** | **3,550** | **−72.0%** | 88.3% | **24.88** |
+| TOON | 4,847 | −61.7% | 88.7% | 18.29 |
+| JSON (compact) | 7,339 | −42.1% | 89.0% | 12.13 |
+| JSON | 12,668 | baseline | 84.7% | 6.68 |
 
-## Project Structure
+The accuracy column is the one worth dwelling on: ISON stays within a point of
+JSON while using a fraction of the budget. Density did not cost comprehension.
 
-```
-ison/
-├── ison-js/               # JavaScript parser (NPM: ison-parser)
-│   └── src/validation.js  # Built-in validation module
-├── ison-ts/               # TypeScript parser + validation (NPM: ison-ts)
-│   └── src/validation.ts  # Built-in validation module
-├── ison-py/               # Python parser + validation (PyPI: ison-py)
-│   └── validation/        # Built-in validation subpackage
-├── ison-rust/             # Rust parser (Crates.io: ison-rs)
-├── ison-cpp/              # C++ header-only parser
-├── ison-go/               # Go parser + validation
-│   └── validation/        # Built-in validation subpackage
-├── ison-cli/              # CLI tool (PyPI: ison-cli)
-├── ison-vscode/           # VS Code extension (Marketplace: ison-lang)
-├── n8n-nodes-ison/        # n8n community node
-├── isonantic-rust/        # Rust validation (Crates.io: isonantic-rs)
-├── isonantic-cpp/         # C++ validation header
-├── benchmark/             # Token efficiency benchmarks
-├── images/                # Logo and assets
-├── AGENTS.md              # AI coding agent guidelines
-├── LICENSE                # MIT License
-└── README.md              # This file
-```
-
-> **Note:** Standalone `isonantic-ts`, `isonantic` (Python), and `isonantic-go` packages are deprecated. Validation is now integrated into the parser packages. Rust and C++ validation remain as separate packages.
+**[Full methodology](benchmark/BENCHMARK_300.md)** — including how the questions
+were generated and why accuracy-per-token is the metric that matters.
 
 ---
 
 ## Development
 
 ```bash
-# Clone the repository
 git clone https://github.com/ISON-format/ison.git
 cd ison
 
-# JavaScript
-cd ison-js && npm install && npm test
-
-# TypeScript (includes validation)
-cd ison-ts && npm install && npm test
-
-# Python (includes validation)
-cd ison-py && pip install -e . && pytest
-
-# Rust
-cd ison-rust && cargo test
-
-# C++
-cd ison-cpp && mkdir build && cd build && cmake .. && cmake --build . && ctest
-
-# Go (includes validation)
-cd ison-go && go test -v ./...
+cd ison-py    && pip install -e ".[dev]" && pytest        # Python
+cd ison-js    && npm install && npm test                  # JavaScript
+cd ison-ts    && npm install && npm test                  # TypeScript
+cd ison-rust  && cargo test                               # Rust
+cd ison-go    && go test ./...                            # Go
+cd ison-cs    && dotnet test                              # C#
+cd ison-cpp   && mkdir build && cd build && cmake .. && cmake --build . && ctest
 ```
 
----
+Cross-language parity, beyond each suite's own corpus checks:
 
-## Test Results
-
-<details>
-<summary><strong>Click to expand test results (860+ tests passing across seven implementations)</strong></summary>
-
-### JavaScript (ison-parser) - 194 tests
-```
-✓ parses basic table correctly
-✓ handles quoted strings
-✓ preserves type annotations
-✓ handles references
-✓ parses multiple tables
-✓ converts to JSON correctly
-✓ handles null values
-✓ handles ISONL format
-# Built-in validation tests (47 tests)
-✓ string/number/boolean schemas
-✓ object/array/table schemas
-✓ custom refinements
-... and more
+```bash
+python benchmark/parity/run_extended_parity.py
 ```
 
-### TypeScript (ison-ts) - 156 tests
+### Layout
+
 ```
-✓ should parse basic table
-✓ should handle quoted strings
-✓ should preserve type annotations
-✓ should handle references
-✓ should parse multiple tables
-✓ should convert to JSON
-✓ should handle null values
-✓ should parse ISONL format
+ison/
+├── ison-py/  ison-js/  ison-ts/          parsers
+├── ison-rust/  ison-go/  ison-cpp/  ison-cs/
+├── ison-cli/  ison-vscode/               tools
+├── benchmark/
+│   ├── parity/                           cross-language corpus
+│   └── BENCHMARK_300.md                  token benchmark
+└── ISONCS.md                             canonical serialization spec
 ```
-
-### Python (ison-py) - 233 tests
-```
-✓ test_parse_basic_table
-✓ test_parse_quoted_strings
-✓ test_parse_type_annotations
-✓ test_parse_references
-✓ test_to_json / test_from_dict
-✓ test_isonl_basic_parsing
-# Built-in validation tests:
-✓ test_model_validation
-✓ test_field_constraints
-✓ test_reference_resolution
-... and 200+ more tests
-```
-
-### Rust (ison-rs) - 31 tests
-```
-✓ test_dumps_with_delimiter
-✓ test_isonl
-✓ test_ison_to_json
-✓ test_json_to_ison
-✓ test_parse_references
-✓ test_parse_simple_table
-✓ test_roundtrip
-✓ test_type_inference
-✓ test_version
-✓ doc-tests
-```
-
-### C++ (ison-cpp) - 2 suites (incl. 80 parity checks)
-```
-✓ parse_simple_table
-✓ parse_object_block
-✓ parse_multiple_blocks
-✓ type_inference (int, float, bool, null, string)
-✓ parse_references (simple, namespaced, relationship)
-✓ serialize_roundtrip
-✓ parse_isonl / serialize_isonl
-✓ to_json
-... and 15 more tests
-```
-
-### Go (ison-go) - 93 tests
-```
-✓ TestParseSimpleTable
-✓ TestParseTypedFields
-✓ TestParseQuotedStrings
-✓ TestParseNullValues
-✓ TestParseReferences
-✓ TestParseObjectBlock
-✓ TestParseMultipleBlocks
-✓ TestDumps / TestRoundtrip
-✓ TestDumpsISONL / TestParseISONL
-✓ TestToJSON / TestFromJSON
-# Built-in validation available in validation subpackage
-... and more tests
-```
-
-### C# (Ison.Parser) - 156 tests
-```
-✓ TestParser        — headers, type annotations, references, escapes,
-                      dot-path fields, summary rows, inline comments
-✓ TestSerializer    — round-trip quoting, alignment, number formatting
-✓ TestIsonl         — parse, serialize, streaming, envelope validation
-✓ TestCanonical     — id hoisting, UTF-8 byte order, ordinal sorting
-✓ TestCrossLanguageParity — byte-identity vs the ison-py reference
-                      across all four renderings, 16 corpus cases
-```
-
-</details>
-
----
-
-## Benchmark Results 🏆
-
-**300-Question Benchmark** across 20 datasets using GPT-4o tokenizer (o200k_base):
-
-| Format | Total Tokens | vs JSON | Accuracy | Acc/1K Tokens |
-|--------|-------------|---------|----------|---------------|
-| **ISON** | **3,550** | **-72.0%** | 88.3% | **24.88** |
-| TOON | 4,847 | -61.7% | 88.7% | 18.29 |
-| JSON Compact | 7,339 | -42.1% | 89.0% | 12.13 |
-| JSON | 12,668 | baseline | 84.7% | 6.68 |
-
-### Key Results
-
-- ✅ **ISON won ALL 20 token benchmarks**
-- ✅ **272% more efficient than JSON** (Accuracy per 1K tokens)
-- ✅ **27% more token-efficient than TOON**
-- ✅ **3.6x more data in same context window**
-
-👉 **[Full Benchmark Details](benchmark/BENCHMARK_300.md)** | **[Run the Benchmark](benchmark/)**
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Please:
+ISON is a young format, and the most useful contributions are often the least
+glamorous. Things that genuinely help:
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+**Found data that round-trips wrong?** That is the highest-value bug report
+there is. Open an issue with the input and what you expected — a failing case is
+worth more than a description of one.
+
+**Add a case to the parity corpus.** [`benchmark/parity/`](benchmark/parity/) is
+how seven implementations stay honest with each other. If you find an edge case
+that behaves differently in two languages, a corpus case pins it forever. See
+[HARNESS.md](benchmark/parity/HARNESS.md) for the available shapes.
+
+**Port ISON to a new language.** ison-py is the reference and the parity corpus
+is the acceptance test. If your port passes the corpus, it agrees with the others
+by construction.
+
+**Improve the documentation.** If something took longer to understand than it
+should have, that is a documentation bug worth filing.
+
+The usual flow:
+
+1. Fork and branch — `git checkout -b fix/thing`
+2. Add a test that fails, then make it pass
+3. Run the suites for whichever implementations you touched
+4. Open a pull request describing what broke and why the fix is right
+
+One request: please keep changes to canonical output backed by a parity case.
+Byte-identical output across languages is the one guarantee every implementation
+must hold to.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detail and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for how we work together.
 
 ---
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
-
----
+MIT — see [LICENSE](LICENSE).
 
 ## Author
 
 **Mahesh Vaikri**
 
-- Website: [www.ison.dev](https://www.ison.dev) | [www.getison.com](https://www.getison.com)
+- [www.ison.dev](https://www.ison.dev) • [www.getison.com](https://www.getison.com)
 - GitHub: [@maheshvaikri-code](https://github.com/maheshvaikri-code)
 
 ---
 
 <p align="center">
-  <strong>ISON</strong> - Less tokens, more context, better AI.
+  <strong>ISON</strong> — less tokens, more context, better AI.
 </p>
