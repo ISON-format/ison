@@ -88,6 +88,33 @@ This matters for characters outside the Basic Multilingual Plane (above U+FFFF):
 
 The field name `"id"` is reserved in canonical serialization. If your data has an unrelated column named `"id"` that is not a reference key, canonical output will still hoist it first. Use a different name (e.g., `"_id"`, `"oid"`) if this behavior is unwanted.
 
+### Representable Names
+
+A name that cannot be written and read back as itself has no canonical form, so serialization **rejects** it rather than emitting bytes that parse as something else.
+
+Names obtained by parsing are always representable — the parser could not have produced an unrepresentable one. The rule applies to the other path: a document built in code, whose names never had to survive a parse.
+
+**Field names** may not contain:
+
+| Character | Why |
+| --- | --- |
+| space, tab | the field header is whitespace-separated, so `first name` reads back as two fields |
+| newline, CR | ends the header line |
+| `:` | separates a field name from its type (`id:int`) |
+| `\|` | the ISONL field delimiter |
+
+and may not **begin** with `#`, which starts a comment. A `#` anywhere else is unambiguous.
+
+**Block kind and name** may not contain space, tab, newline, or CR. The kind additionally may not contain `.`, since the header splits on the first dot — a dot in the kind would move that boundary and rename the block.
+
+Explicitly still representable, and pinned by corpus cases so a later tightening cannot remove them silently:
+
+- **`.` in a field name.** Dotted field names address nested values; a flat key containing a dot round-trips as itself. `a.b` is legal.
+- **`#` after the first character.** `a#b` is legal.
+- **`.` in a block name.** Only the kind is constrained; the header splits on the first dot, so everything after it is the name.
+
+Implementations signal rejection idiomatically — an exception in Python, JavaScript, TypeScript, C++ and C#; an error return in Go and Rust. The shared corpus maps each onto a neutral token (`INVALID_FIELD_NAME`, `INVALID_BLOCK_NAME`) so the verdict is comparable across languages without sharing type names.
+
 ### Cross-Implementation Verification
 
 All implementations (Python, JavaScript, TypeScript, Go, Rust, C#, C++) are verified to produce byte-identical field orders by:
