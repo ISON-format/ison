@@ -315,6 +315,11 @@ jobs:
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
+    # Creating a release writes a tag and a release object, which the default
+    # read-only workflow token cannot do -- it fails 403 "Resource not
+    # accessible by integration" *after* every package has already published.
+    permissions:
+      contents: write
     needs: [publish-npm-base, publish-python-base, publish-rust-base, publish-rust-dependent]
     if: ${{ always() && !failure() && !cancelled() && inputs.dry_run != true }}
     steps:
