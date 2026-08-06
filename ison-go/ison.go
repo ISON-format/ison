@@ -743,6 +743,9 @@ func DumpsWithOptions(doc *Document, opts DumpsOptions) (string, error) {
 		if err := validateBlockNames(doc.Blocks[name]); err != nil {
 			return "", err
 		}
+		if err := validateRowReferences(doc.Blocks[name], referenceForbiddenISON); err != nil {
+			return "", err
+		}
 	}
 
 	var sb strings.Builder
@@ -838,6 +841,9 @@ func DumpsWithOptions(doc *Document, opts DumpsOptions) (string, error) {
 func DumpsCanonical(doc *Document) (string, error) {
 	for _, name := range doc.Order {
 		if err := validateBlockNames(doc.Blocks[name]); err != nil {
+			return "", err
+		}
+		if err := validateRowReferences(doc.Blocks[name], referenceForbiddenISON); err != nil {
 			return "", err
 		}
 	}
@@ -1309,6 +1315,60 @@ func validateBlockNames(block *Block) error {
 	return nil
 }
 
+// A reference emits as ":type:id" with no quoting. Every other value type
+// passes through the quoting rules, so a string holding a space is quoted and
+// survives; a reference has no such escape and the raw characters land in the
+// row. Whitespace therefore splits the row into extra columns, and a newline
+// ends it early - which truncates the reference silently.
+//
+// Each form rejects exactly what it cannot parse, and nothing more. That is
+// what keeps the invariant that anything obtained by parsing can be written
+// back: a reference the reader could produce is always one the writer accepts.
+//
+//	ISON    whitespace only
+//	ISONL   whitespace and '|', because ISONL ends the field at a pipe
+//
+// '|' is deliberately NOT rejected for ISON: ":p:a|b" parses there and reads
+// back correctly, so refusing to write it would make a valid file readable but
+// not writable.
+const (
+	referenceForbiddenISON  = " \t\n\r"
+	referenceForbiddenISONL = referenceForbiddenISON + "|"
+)
+
+// validateReference rejects a reference that cannot be written and read back
+// unchanged.
+func validateReference(ref Reference, forbidden string) error {
+	for _, part := range []struct{ label, value string }{
+		{"id", ref.ID},
+		{"type", ref.GetNamespace()},
+	} {
+		if i := strings.IndexAny(part.value, forbidden); i >= 0 {
+			return fmt.Errorf(
+				"reference %s %q contains %s; a reference is written as ':type:id' with no quoting, so it has no unambiguous ISON encoding",
+				part.label, part.value, describeChar(rune(part.value[i])))
+		}
+	}
+	if ref.ID == "" {
+		return fmt.Errorf("reference id is empty")
+	}
+	return nil
+}
+
+// validateRowReferences checks every reference a block will emit.
+func validateRowReferences(block *Block, forbidden string) error {
+	for _, row := range block.Rows {
+		for _, v := range row {
+			if v.Type == TypeReference {
+				if err := validateReference(v.RefVal, forbidden); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // isonlEnvelopeForbidden lists the characters that would corrupt the line
 // structure if they appeared raw in the envelope (kind, name, or field names).
 const isonlEnvelopeForbidden = "|\"\\ \t\n\r"
@@ -1321,6 +1381,9 @@ func validateISONLEnvelope(block *Block) error {
 	// unwritable in ISONL. ISONL then adds its own: the quote and backslash
 	// that its value escaping gives meaning to.
 	if err := validateBlockNames(block); err != nil {
+		return err
+	}
+	if err := validateRowReferences(block, referenceForbiddenISONL); err != nil {
 		return err
 	}
 

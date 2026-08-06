@@ -474,6 +474,57 @@ inline void validate_block_names(const Block& block) {
     }
 }
 
+// A reference emits as ":type:id" with no quoting. Every other value type
+// passes through the quoting rules, so a string holding a space is quoted and
+// survives; a reference has no such escape and the raw characters land in the
+// row. Whitespace therefore splits the row into extra columns, and a newline
+// ends it early - which truncates the reference silently.
+//
+// Each form rejects exactly what it cannot parse, and nothing more. That is
+// what keeps the invariant that anything obtained by parsing can be written
+// back. '|' is absent from the ISON set on purpose: ":p:a|b" parses there and
+// reads back correctly, so refusing to write it would make a valid file
+// readable but not writable. ISONL cannot parse one, so it rejects it.
+inline bool reference_char_forbidden(char c, bool isonl) {
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r') return true;
+    return isonl && c == '|';
+}
+
+// Reject a reference that cannot be written and read back unchanged.
+inline void validate_reference_part(const std::string& label,
+                                    const std::string& value, bool isonl) {
+    for (size_t i = 0; i < value.size(); ++i) {
+        if (reference_char_forbidden(value[i], isonl)) {
+            throw ISONNameError(
+                "reference " + label + " '" + value + "' contains " +
+                describe_char(value[i]) + "; a reference is written as ':type:id' with "
+                "no quoting, so it has no unambiguous ISON encoding");
+        }
+    }
+}
+
+inline void validate_reference(const Reference& ref, bool isonl) {
+    validate_reference_part("id", ref.id, isonl);
+    if (ref.type.has_value()) {
+        validate_reference_part("type", ref.type.value(), isonl);
+    }
+    if (ref.id.empty()) {
+        throw ISONNameError("reference id is empty");
+    }
+}
+
+// Check every reference a block will emit.
+inline void validate_row_references(const Block& block, bool isonl) {
+    for (size_t r = 0; r < block.rows.size(); ++r) {
+        for (Row::const_iterator it = block.rows[r].begin(); it != block.rows[r].end(); ++it) {
+            if (it->second.type() == ValueType::Reference) {
+                const std::shared_ptr<Reference>& ref = it->second.as_reference_ptr();
+                if (ref) validate_reference(*ref, isonl);
+            }
+        }
+    }
+}
+
 }  // namespace detail
 
 class Document {
@@ -1019,6 +1070,7 @@ public:
 private:
     static std::string serialize_block_canonical(const Block& block) {
         detail::validate_block_names(block);
+        detail::validate_row_references(block, false);
 
         std::vector<std::string> lines;
         lines.push_back(block.kind + "." + block.name);
@@ -1122,6 +1174,7 @@ private:
 private:
     static std::string serialize_block(const Block& block, bool align_columns) {
         detail::validate_block_names(block);
+        detail::validate_row_references(block, false);
 
         std::vector<std::string> lines;
         lines.push_back(block.kind + "." + block.name);
@@ -1747,6 +1800,7 @@ private:
         // is unwritable in ISONL. ISONL then adds its own: the quote and
         // backslash that its value escaping gives meaning to.
         detail::validate_block_names(block);
+        detail::validate_row_references(block, true);
 
         validate_envelope_part("kind", block.kind);
         validate_envelope_part("name", block.name);

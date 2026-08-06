@@ -39,6 +39,7 @@ namespace IsonParser
         private static string SerializeBlock(Block block, bool alignColumns, string delimiter)
         {
             NameValidator.ValidateBlockNames(block);
+            NameValidator.ValidateRowReferences(block, false);
 
             var lines = new List<string> { $"{block.Kind}.{block.Name}" };
 
@@ -132,6 +133,7 @@ namespace IsonParser
         private static string SerializeBlockCanonical(Block block)
         {
             NameValidator.ValidateBlockNames(block);
+            NameValidator.ValidateRowReferences(block, false);
 
             var lines = new List<string> { $"{block.Kind}.{block.Name}" };
 

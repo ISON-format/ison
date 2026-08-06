@@ -306,6 +306,47 @@ export function validateBlockNames(block: Block): void {
   }
 }
 
+// A reference emits as ':type:id' with no quoting. Every other value type
+// passes through the quoting rules, so a string holding a space is quoted and
+// survives; a reference has no such escape and the raw characters land in the
+// row. Whitespace therefore splits the row into extra columns, and a newline
+// ends it early - which truncates the reference silently.
+//
+// Each form rejects exactly what it cannot parse, and nothing more. That is
+// what keeps the invariant that anything obtained by parsing can be written
+// back.
+//
+//   ISON    whitespace only
+//   ISONL   whitespace and '|', because ISONL ends the field at a pipe
+//
+// '|' is deliberately NOT rejected for ISON: ':p:a|b' parses there and reads
+// back correctly, so refusing to write it would make a valid file readable but
+// not writable.
+const REFERENCE_FORBIDDEN_ISON = ["\t", "\n", "\r", " "];
+export const REFERENCE_FORBIDDEN_ISONL = [...REFERENCE_FORBIDDEN_ISON, "|"];
+
+/** Reject a reference that cannot be written and read back unchanged. */
+export function validateReference(
+  ref: Reference,
+  forbidden: string[] = REFERENCE_FORBIDDEN_ISON
+): void {
+  for (const [label, value] of [["id", ref.id], ["type", ref.type]] as const) {
+    if (value === null || value === undefined) continue;
+    for (const ch of forbidden) {
+      if (value.includes(ch)) {
+        throw new ISONNameError(
+          `reference ${label} ${JSON.stringify(value)} contains ${describeChar(ch)}; ` +
+          `a reference is written as ':type:id' with no quoting, so it has no ` +
+          `unambiguous ISON encoding`
+        );
+      }
+    }
+  }
+  if (!ref.id) {
+    throw new ISONNameError("reference id is empty");
+  }
+}
+
 /**
  * A raw row token plus whether it appeared quoted in the source
  */
@@ -895,6 +936,7 @@ class Serializer {
       return value.toString();
     }
     if (value instanceof Reference) {
+      validateReference(value);
       return value.toIson();
     }
     // String
@@ -1276,7 +1318,10 @@ class ISONLSerializer {
     if (value === null || value === undefined) return "null";
     if (typeof value === "boolean") return value ? "true" : "false";
     if (typeof value === "number") return value.toString();
-    if (value instanceof Reference) return value.toIson();
+    if (value instanceof Reference) {
+      validateReference(value, REFERENCE_FORBIDDEN_ISONL);
+      return value.toIson();
+    }
     return this.quoteIfNeeded(value);
   }
 

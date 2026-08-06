@@ -18,6 +18,7 @@ import pytest
 from ison_parser import (
     Block,
     Document,
+    Reference,
     ISONNameError,
     ISONLSerializer,
     dumps,
@@ -108,3 +109,74 @@ def test_parsed_documents_are_never_rejected() -> None:
     for dump in (dumps, dumps_canonical, dumps_isonl,
                  ISONLSerializer.dumps_canonical):
         assert dump(doc)
+
+
+# --- references ------------------------------------------------------------
+#
+# A reference is written as ':type:id' with no quoting. Every other value goes
+# through the quoting rules, so a string holding a space survives; a reference
+# has no such escape and the raw characters land in the row.
+
+REF_MODES = pytest.mark.parametrize("dump", [
+    dumps, dumps_canonical,
+], ids=["dumps", "canonical"])
+
+
+def _ref_doc(ref: Reference) -> Document:
+    return Document(blocks=[Block(kind="table", name="t", fields=["id", "r"],
+                                  rows=[{"id": 1, "r": ref}])])
+
+
+@REF_MODES
+@pytest.mark.parametrize("ref", [
+    Reference(id="a b", type="p"),
+    Reference(id="a\tb", type="p"),
+    Reference(id="a\nb", type="p"),   # used to truncate to Reference(p:a), silently
+    Reference(id="a\rb", type="p"),
+    Reference(id="42", type="my ns"),  # the type is emitted raw too
+    Reference(id="", type="p"),
+], ids=["space", "tab", "newline", "cr", "type-space", "empty-id"])
+def test_unwritable_reference_is_rejected(dump, ref: Reference) -> None:
+    with pytest.raises(ISONNameError, match="reference"):
+        dump(_ref_doc(ref))
+
+
+@REF_MODES
+@pytest.mark.parametrize("ref", [
+    Reference(id="42"),
+    Reference(id="42", type="user"),
+    Reference(id="a:b", type="p"),     # the parser splits on the first two colons
+    Reference(id="a|b", type="p"),     # legal in ISON; see the round-trip test below
+    Reference(id="café", type="p"),
+    Reference(id="a#b", type="p"),
+], ids=["plain", "namespaced", "colon", "pipe", "unicode", "hash"])
+def test_legal_reference_still_serializes(dump, ref: Reference) -> None:
+    assert dump(_ref_doc(ref))
+
+
+def test_a_pipe_reference_round_trips_in_ison() -> None:
+    """The invariant: anything the reader can produce, the writer must accept.
+
+    ':p:a|b' parses in ISON, so refusing to write it would make a valid file
+    readable but not writable. ISONL is stricter because a pipe ends its field
+    -- it cannot parse one either, so refusing there breaks nothing.
+    """
+    doc = loads("table.t\nid ref\n1 :p:a|b")
+    assert doc.blocks[0].rows[0]["ref"].id == "a|b"
+
+    once = dumps_canonical(doc)
+    assert loads(once).blocks[0].rows[0]["ref"].id == "a|b"
+
+    with pytest.raises(ISONNameError, match="reference"):
+        dumps_isonl(doc)
+
+
+def test_every_parseable_reference_survives_serialization() -> None:
+    """Sweep the reference forms the parser can actually produce."""
+    for literal, expected_id in [(":42", "42"), (":user:101", "101"),
+                                 (":MEMBER_OF:10", "10"), (":p:a|b", "a|b"),
+                                 (":p:a#b", "a#b")]:
+        doc = loads(f"table.t\nid ref\n1 {literal}")
+        ref = doc.blocks[0].rows[0]["ref"]
+        assert ref.id == expected_id, literal
+        assert dumps_canonical(doc), literal

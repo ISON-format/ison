@@ -246,6 +246,7 @@ namespace IsonParser
             // ISON is unwritable in ISONL. ISONL then adds its own: the quote
             // and backslash that its value escaping gives meaning to.
             NameValidator.ValidateBlockNames(block);
+            NameValidator.ValidateRowReferences(block, true);
 
             ValidateEnvelopePart("kind", block.Kind);
             ValidateEnvelopePart("name", block.Name);

@@ -812,6 +812,7 @@ impl Serializer {
         let mut parts = Vec::with_capacity(doc.blocks.len());
         for b in &doc.blocks {
             validate_block_names(b)?;
+            validate_row_references(b, &REFERENCE_FORBIDDEN_ISON)?;
             parts.push(self.serialize_block(b));
         }
         Ok(parts.join("\n\n"))
@@ -963,6 +964,7 @@ impl CanonicalSerializer {
     fn serialize(&self, doc: &Document) -> Result<String> {
         for b in &doc.blocks {
             validate_block_names(b)?;
+            validate_row_references(b, &REFERENCE_FORBIDDEN_ISON)?;
         }
 
         // Sort blocks ordinal-string by kind.name
@@ -1560,12 +1562,70 @@ fn validate_block_names(block: &Block) -> Result<()> {
     Ok(())
 }
 
+/// Characters a reference may not carry, per output form.
+///
+/// A reference emits as `:type:id` with no quoting. Every other value type
+/// passes through the quoting rules, so a string holding a space is quoted and
+/// survives; a reference has no such escape and the raw characters land in the
+/// row. Whitespace therefore splits the row into extra columns, and a newline
+/// ends it early - which truncates the reference silently.
+///
+/// Each form rejects exactly what it cannot parse, and nothing more. That is
+/// what keeps the invariant that anything obtained by parsing can be written
+/// back: a reference the reader could produce is always one the writer accepts.
+///
+/// `|` is deliberately absent from the ISON set: `:p:a|b` parses there and
+/// reads back correctly, so refusing to write it would make a valid file
+/// readable but not writable. ISONL cannot parse one, so it rejects it.
+const REFERENCE_FORBIDDEN_ISON: [char; 4] = [' ', '\t', '\n', '\r'];
+const REFERENCE_FORBIDDEN_ISONL: [char; 5] = [' ', '\t', '\n', '\r', '|'];
+
+/// Reject a reference that cannot be written and read back unchanged.
+fn validate_reference(r: &Reference, forbidden: &[char]) -> Result<()> {
+    let parts: [(&str, Option<&String>); 2] =
+        [("id", Some(&r.id)), ("type", r.ref_type.as_ref())];
+    for (label, value) in parts {
+        let Some(value) = value else { continue };
+        if let Some(c) = value.chars().find(|c| forbidden.contains(c)) {
+            return Err(ISONError {
+                message: format!(
+                    "reference {} '{}' contains {}; a reference is written as ':type:id' with no quoting, so it has no unambiguous ISON encoding",
+                    label,
+                    value,
+                    describe_char(c)
+                ),
+                line: None,
+            });
+        }
+    }
+    if r.id.is_empty() {
+        return Err(ISONError {
+            message: "reference id is empty".to_string(),
+            line: None,
+        });
+    }
+    Ok(())
+}
+
+/// Check every reference a block will emit.
+fn validate_row_references(block: &Block, forbidden: &[char]) -> Result<()> {
+    for row in block.rows.iter().chain(block.summary_rows.iter()) {
+        for value in row.values() {
+            if let Value::Reference(r) = value {
+                validate_reference(r, forbidden)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Reject kind/name/fields that cannot survive an ISONL round-trip
 fn validate_isonl_envelope(block: &Block) -> Result<()> {
     // The shared ISON name rules apply here too - a name unwritable in ISON is
     // unwritable in ISONL. ISONL then adds its own: the quote and backslash
     // that its value escaping gives meaning to.
     validate_block_names(block)?;
+    validate_row_references(block, &REFERENCE_FORBIDDEN_ISONL)?;
 
     for (label, value) in [("kind", &block.kind), ("name", &block.name)] {
         if value.is_empty() {

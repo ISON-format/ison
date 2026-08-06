@@ -99,5 +99,60 @@ namespace IsonParser
                 ValidateFieldName(field);
             }
         }
+
+        // A reference emits as ":type:id" with no quoting. Every other value
+        // type passes through the quoting rules, so a string holding a space is
+        // quoted and survives; a reference has no such escape and the raw
+        // characters land in the row. Whitespace therefore splits the row into
+        // extra columns, and a newline ends it early - which truncates the
+        // reference silently.
+        //
+        // Each form rejects exactly what it cannot parse, and nothing more.
+        // That is what keeps the invariant that anything obtained by parsing
+        // can be written back. '|' is absent from the ISON set on purpose:
+        // ":p:a|b" parses there and reads back correctly, so refusing to write
+        // it would make a valid file readable but not writable. ISONL cannot
+        // parse one, so it rejects it.
+        private static readonly char[] ReferenceForbiddenIson = { ' ', '\t', '\n', '\r' };
+        private static readonly char[] ReferenceForbiddenIsonl = { ' ', '\t', '\n', '\r', '|' };
+
+        /// <summary>Reject a reference that cannot be written and read back unchanged.</summary>
+        internal static void ValidateReference(Reference reference, bool isonl)
+        {
+            char[] forbidden = isonl ? ReferenceForbiddenIsonl : ReferenceForbiddenIson;
+
+            foreach (var part in new[] { ("id", reference.Id), ("type", reference.Type) })
+            {
+                if (part.Item2 == null) continue;
+                int i = part.Item2.IndexOfAny(forbidden);
+                if (i >= 0)
+                {
+                    throw new IsonNameException(
+                        $"reference {part.Item1} '{part.Item2}' contains {Describe(part.Item2[i])}; " +
+                        "a reference is written as ':type:id' with no quoting, so it has no " +
+                        "unambiguous ISON encoding");
+                }
+            }
+
+            if (string.IsNullOrEmpty(reference.Id))
+            {
+                throw new IsonNameException("reference id is empty");
+            }
+        }
+
+        /// <summary>Check every reference a block will emit.</summary>
+        internal static void ValidateRowReferences(Block block, bool isonl)
+        {
+            foreach (var row in block.Rows)
+            {
+                foreach (var value in row.Values)
+                {
+                    if (value is Reference reference)
+                    {
+                        ValidateReference(reference, isonl);
+                    }
+                }
+            }
+        }
     }
 }

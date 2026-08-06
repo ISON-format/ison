@@ -115,6 +115,20 @@ Explicitly still representable, and pinned by corpus cases so a later tightening
 
 Implementations signal rejection idiomatically — an exception in Python, JavaScript, TypeScript, C++ and C#; an error return in Go and Rust. The shared corpus maps each onto a neutral token (`INVALID_FIELD_NAME`, `INVALID_BLOCK_NAME`) so the verdict is comparable across languages without sharing type names.
 
+### Representable References
+
+A reference is written as `:type:id` with **no quoting**. Every other value passes through the quoting rules, so a string containing a space is quoted and survives; a reference has no such escape and its characters land in the row raw. Whitespace therefore splits the row into extra columns, and a newline ends the row early — which truncates the reference *silently* rather than failing.
+
+A reference `id` or `type` may not contain space, tab, newline or carriage return. In **ISONL** the pipe is additionally forbidden, because it ends the field.
+
+That asymmetry is deliberate, and it follows from a rule that governs all of this section:
+
+> **Each form rejects exactly what it cannot parse, and nothing more.**
+
+`:p:a|b` parses correctly in ISON and reads back as `Reference(p:a|b)`, so ISON must keep writing it — refusing would make a valid file readable but not writable, which is a worse failure than the one being prevented. ISONL cannot parse it, so ISONL refuses it, and converting such a document from ISON to ISONL raises rather than emitting a line that will fail at read.
+
+The practical consequence is that the two forms do not carry identical document sets. ISON is the wider one. A converter must be prepared for the narrowing, and gets a clear error at the point of conversion instead of a corrupt line discovered later by a different reader.
+
 ### Cross-Implementation Verification
 
 All implementations (Python, JavaScript, TypeScript, Go, Rust, C#, C++) are verified to produce byte-identical field orders by:
