@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ison-cli"
-version = "1.0.0"
+version = "1.0.1"
 description = "Command-line interface for ISON - Token-efficient data format for AI/LLM workflows"
 readme = "README.md"
 license = {text = "MIT"}
@@ -33,7 +33,7 @@ classifiers = [
 ]
 requires-python = ">=3.8"
 dependencies = [
-    "ison-py>=1.0.3",
+    "ison-py>=1.1.0",
     "click>=8.0.0",
     "rich>=13.0.0",
     "pyyaml>=6.0",

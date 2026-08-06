@@ -67,8 +67,9 @@ id:int name:string email active:bool
         println!("{}: {} (active: {})", id, name, active);
     }
 
-    // Serialize back to ISON
-    let output = dumps(&doc, true);
+    // Serialize back to ISON. Returns Result: a name or reference with no
+    // unambiguous ISON encoding is rejected rather than written.
+    let output = dumps(&doc, true)?;
     println!("{}", output);
 
     Ok(())
@@ -95,11 +96,13 @@ let doc = loads_isonl(isonl_text)?;
 ```rust
 use ison_rs::{dumps, dumps_isonl};
 
-// To ISON string
-let ison = dumps(&doc, true);   // With column alignment
-let ison = dumps(&doc, false);  // Without alignment
+// To ISON string. Result, because a name or reference that cannot be written
+// and read back unchanged is rejected rather than silently corrupted.
+let ison = dumps(&doc, true)?;   // With column alignment
+let ison = dumps(&doc, false)?;  // Without alignment
 
-// To ISONL (validates block kind/name/field names, hence Result)
+// To ISONL. Stricter: a reference id containing '|' is valid ISON but ends the
+// field in ISONL, so it is refused here and accepted above.
 let isonl = dumps_isonl(&doc)?;
 
 // To JSON (requires serde feature)
@@ -205,7 +208,7 @@ block.rows.push(row);
 
 doc.blocks.push(block);
 
-let ison = dumps(&doc, true);
+let ison = dumps(&doc, true)?;
 ```
 
 ### Field Info

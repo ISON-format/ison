@@ -190,9 +190,47 @@ class TestCLICommands:
         }
 
     def test_version(self, runner):
+        """`ison --version` reports whatever __version__ says."""
+        from ison_cli import __version__
+
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
-        assert "1.0.0" in result.output
+        assert __version__ in result.output, (
+            f"CLI reported {result.output.strip()!r} "
+            f"but the package declares {__version__!r}"
+        )
+
+    def test_version_matches_pyproject(self):
+        """__version__ and pyproject.toml must agree.
+
+        These are two independent declarations, and a bump that edits one and
+        misses the other ships a package whose --version lies about which
+        release it is. That exact drift has happened twice in this repo --
+        ison-js's source header, and ison-go's validation subpackage -- so it
+        is worth a test rather than a habit.
+
+        Asserting the literal string here would not catch it: --version reads
+        from __version__, so comparing the two moves together and proves
+        nothing.
+        """
+        import re
+        from pathlib import Path
+
+        from ison_cli import __version__
+
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        if not pyproject.exists():          # installed without sources
+            pytest.skip("pyproject.toml not available")
+
+        text = pyproject.read_text(encoding="utf-8")
+        # Deliberately not tomllib: CI runs Python 3.9, which predates it.
+        match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
+        assert match, "no version in pyproject.toml"
+
+        assert match.group(1) == __version__, (
+            f"pyproject.toml says {match.group(1)!r} but "
+            f"ison_cli.__version__ says {__version__!r}"
+        )
 
     def test_formats(self, runner):
         result = runner.invoke(cli, ["formats"])

@@ -80,7 +80,7 @@ foreach (IsonlRecord record in new IsonlParser().Stream(reader))
 | `Ison.FromJson` / `ToJson` | JSON interop |
 | `IsonlParser.Stream` | Line-at-a-time streaming |
 | `Document`, `Block`, `Reference`, `FieldInfo` | Data model |
-| `IsonException`, `IsonSyntaxException` | Errors |
+| `IsonException`, `IsonSyntaxException`, `IsonNameException` | Errors |
 
 ## Staying current
 

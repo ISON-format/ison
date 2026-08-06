@@ -2,6 +2,16 @@
 
 All notable changes to the ISON command-line tool will be documented in this file.
 
+## [1.0.1] - 2026-08-06
+
+### Fixed
+
+- **`convert --to isonl` Wrote Unreadable Files**: converting a document whose reference id contains `|` emitted an ISONL line with three pipes where the format allows two -- `table.t|id ref|1 :p:a|b`. It was written silently and failed later at read. The CLI's own code was not at fault; the dependency floor allowed `ison-py>=1.0.3`, and every release in that range had the defect. The floor is now `ison-py>=1.1.0`, which refuses the conversion with a clear error instead of producing the file.
+
+### Changed
+
+- **Dependency floor raised to `ison-py>=1.1.0`**: 1.1.0 rejects names and references that cannot be written and read back unchanged. Since the CLI serializes on behalf of the user, resolving to an older parser would reintroduce silent corruption it cannot detect.
+
 ## [1.0.0] - 2026-08-01
 
 ### Added

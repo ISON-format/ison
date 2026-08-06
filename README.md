@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ISON-format/ison/releases"><img src="https://img.shields.io/badge/version-1.0.4-blue.svg" alt="Version 1.0.4"></a>
+  <a href="https://github.com/ISON-format/ison/releases"><img src="https://img.shields.io/github/v/release/ISON-format/ison?label=version&color=blue" alt="Latest release"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://www.npmjs.com/package/ison-parser"><img src="https://img.shields.io/npm/v/ison-parser.svg" alt="NPM"></a>
   <a href="https://pypi.org/project/ison-py"><img src="https://img.shields.io/pypi/v/ison-py.svg" alt="PyPI"></a>
@@ -302,6 +302,28 @@ users = User.parse(doc["users"])   # validated and typed
 The same API exists in JavaScript, TypeScript and Go. Rust and C++ keep
 validation in companion packages, because their module systems make merging it
 awkward.
+
+### Writing is checked too
+
+A name or reference that cannot be written and read back as itself is refused
+at serialization rather than emitted. A field called `first name` would be
+written as a header reading `first name`, which reads back as *two* fields —
+so a document written by one program silently became different data when read
+by another.
+
+The rule is narrow and deliberate:
+
+> Each form rejects exactly what it cannot parse, and nothing more.
+
+So a dot in a field name stays legal, `#` after the first character stays
+legal, and a reference id containing `|` still writes in ISON — it parses
+there. ISONL refuses that one, because a pipe ends its field, which means the
+two forms do not carry identical document sets and ISON is the wider one.
+Converting between them reports the narrowing instead of producing a line that
+fails later at read.
+
+Anything obtained by parsing is always writable. Full rules in
+[ISONCS.md](ISONCS.md#representable-names).
 
 ---
 

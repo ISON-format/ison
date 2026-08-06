@@ -159,8 +159,12 @@ block.AddRow(ison.Row{
 })
 doc.AddBlock(block)
 
-// Serialize to ISON
-output := ison.Dumps(doc)
+// Serialize to ISON. Returns an error when a name or reference has no
+// unambiguous ISON encoding -- see "Representable Names" below.
+output, err := ison.Dumps(doc)
+if err != nil {
+    log.Fatal(err)
+}
 fmt.Println(output)
 // Output:
 // table.users
@@ -198,7 +202,10 @@ doc, err := ison.FromJSON(`{
         {"id": 2, "name": "Bob"}
     ]
 }`)
-output := ison.Dumps(doc)
+output, err := ison.Dumps(doc)
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ## ISON Format Reference
@@ -289,7 +296,10 @@ opts := ison.DumpsOptions{
     Delimiter:    "\t",  // Use tabs instead of spaces
     AlignColumns: true,   // Pad columns for alignment
 }
-output := ison.DumpsWithOptions(doc, opts)
+output, err := ison.DumpsWithOptions(doc, opts)
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ## API Reference
