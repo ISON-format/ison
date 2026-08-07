@@ -1378,8 +1378,11 @@ const isonlEnvelopeForbidden = "|\"\\ \t\n\r"
 // be free of delimiters and whitespace.
 func validateISONLEnvelope(block *Block) error {
 	// The shared ISON name rules apply here too - a name unwritable in ISON is
-	// unwritable in ISONL. ISONL then adds its own: the quote and backslash
-	// that its value escaping gives meaning to.
+	// unwritable in ISONL. ISONL then adds two of its own, for different
+	// reasons: the quote, which it genuinely cannot parse in an envelope, and
+	// the backslash, which it CAN parse but which is kept out of the raw
+	// envelope as a deliberate guard - it is the escape character inside
+	// values. See ISONCS.md, 'Where ISONL is stricter'.
 	if err := validateBlockNames(block); err != nil {
 		return err
 	}

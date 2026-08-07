@@ -1693,8 +1693,11 @@ class ISONLSerializer:
         """Reject kind/name/fields that cannot survive an ISONL round-trip.
 
         The shared ISON name rules apply here too - a name unwritable in ISON
-        is unwritable in ISONL. ISONL then adds its own: the quote and
-        backslash that its value escaping gives meaning to.
+        is unwritable in ISONL. ISONL then adds two of its own, for different
+        reasons: the quote, which it genuinely cannot parse in an envelope,
+        and the backslash, which it can parse but keeps out of the raw
+        envelope as a deliberate guard - it is the escape character inside
+        values. See ISONCS.md, 'Where ISONL is stricter, and why'.
         """
         _validate_block_names(block)
 

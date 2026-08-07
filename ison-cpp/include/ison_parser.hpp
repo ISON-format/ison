@@ -1797,8 +1797,11 @@ private:
     // Reject kind/name/fields that cannot survive an ISONL round-trip
     static void validate_envelope(const Block& block) {
         // The shared ISON name rules apply here too - a name unwritable in ISON
-        // is unwritable in ISONL. ISONL then adds its own: the quote and
-        // backslash that its value escaping gives meaning to.
+        // is unwritable in ISONL. ISONL then adds two of its own, for different
+        // reasons: the quote, which it genuinely cannot parse in an envelope, and
+        // the backslash, which it CAN parse but which is kept out of the raw
+        // envelope as a deliberate guard - it is the escape character inside
+        // values. See ISONCS.md, 'Where ISONL is stricter'.
         detail::validate_block_names(block);
         detail::validate_row_references(block, true);
 

@@ -129,6 +129,26 @@ That asymmetry is deliberate, and it follows from a rule that governs all of thi
 
 The practical consequence is that the two forms do not carry identical document sets. ISON is the wider one. A converter must be prepared for the narrowing, and gets a clear error at the point of conversion instead of a corrupt line discovered later by a different reader.
 
+### Where ISONL is stricter, and why
+
+ISONL writes its envelope — `kind.name|fields|values` — raw, so it refuses characters in block and field names that ISON accepts. Two of those refusals have different justifications, and conflating them has already led to one proposed "fix" in the wrong direction.
+
+| Character | ISON | ISONL | Why ISONL refuses |
+| --- | --- | --- | --- |
+| `\|` | writes | refuses | **Necessity.** Ends the field. ISONL cannot parse it. |
+| `"` | writes | refuses | **Necessity.** Breaks tokenisation — the line no longer has three fields. ISONL cannot parse it. |
+| `\` | writes | refuses | **Caution.** ISONL *can* parse it. |
+
+The backslash is the odd one out. It is ISONL's escape character inside values, so keeping it out of the raw envelope is a deliberate guard rather than a parsing constraint — and by the rule above, refusing what you *can* parse is over-strict.
+
+It is kept anyway, knowingly:
+
+- Every backslash position round-trips through the ISONL parser — infix, leading, trailing, doubled, and adjacent to `n`. A trailing backslash immediately before the delimiter (`table.ab\|id|1`) reads back as the name `ab\` with fields `[id]`; the escape does not extend across the boundary and shift the field split.
+- So there is no ambiguity for the guard to prevent. Relaxing it would mean verifying that envelope-backslash handling is byte-identical across seven independent ISONL parsers, to permit names essentially nobody writes.
+- The current behaviour fails **loudly**, at write, in the process that made the mistake. That is the failure mode this specification prefers.
+
+If a future release relaxes it, the corpus must gain envelope-backslash cases first, and all seven must agree before the rule changes in any one of them.
+
 ### Cross-Implementation Verification
 
 All implementations (Python, JavaScript, TypeScript, Go, Rust, C#, C++) are verified to produce byte-identical field orders by:
