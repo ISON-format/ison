@@ -167,7 +167,11 @@ namespace IsonParser
         public List<IsonlRecord> ParseString(string text)
         {
             var records = new List<IsonlRecord>();
-            string[] lines = (text ?? string.Empty).Split('\n');
+            // Normalize CRLF first: splitting on '\n' alone leaves a trailing
+            // '\r' on every line, which ends up inside block names, field names
+            // and values - so a file saved on Windows parses as different data
+            // rather than failing.
+            string[] lines = (text ?? string.Empty).Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
 
             for (int i = 0; i < lines.Length; i++)
             {

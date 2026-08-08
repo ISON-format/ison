@@ -18,7 +18,11 @@ namespace IsonParser
 
         public Parser(string text)
         {
-            _lines = (text ?? string.Empty).Split('\n');
+            // Normalize CRLF first: splitting on '\n' alone leaves a trailing
+            // '\r' on every line, which ends up inside block names, field names
+            // and values - so a file saved on Windows parses as different data
+            // rather than failing.
+            _lines = (text ?? string.Empty).Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
             _lineNum = 0;
             _document = new Document();
         }
