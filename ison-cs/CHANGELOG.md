@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2026-08-08
+
+### Fixed
+
+- **CRLF Input Parsed As Different Data (CRITICAL)**: the parser split on a bare `'
+'`, leaving a trailing `''` on every line. That carriage return landed inside block names, field names and values, so an ISON file saved on Windows did not fail to parse -- it parsed as different data. A two-column row read its second field as `"target"`, and a reference in that column silently vanished. Both the ISON and ISONL parsers now normalize line endings first. ison-py uses `splitlines()` and ison-rs uses `.lines()`; ison-cs was the only implementation affected.
+
 ## [1.1.0] - 2026-08-05
 
 > **Breaking.** Serialization now rejects block and field names that cannot be

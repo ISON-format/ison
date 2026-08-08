@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.1] - 2026-08-08
+
+### Fixed
+
+- **ESM Bundle Was Missing Canonical Exports (CRITICAL for ESM consumers)**: `dumpsCanonical` and `dumpsCanonicalISONL` were added to the CommonJS export object and never to the hand-maintained list in the ESM build script, so `import { dumpsCanonical } from 'ison-parser'` has thrown since canonical serialization shipped, while `require` worked. The list is now derived from the CJS object, so the two cannot diverge.
+- **ESM Build Produced An Invalid Module On CRLF Checkouts**: the strip regexes matched a bare `
+`. On Windows the CommonJS wrapper survived into the ES module, leaving `module.exports = ISON` inside a file the runtime parses as ESM, and every `import` threw. Published bundles were correct only because CI builds on LF.
+
+### Testing
+
+- **The ESM Bundle Is Now Tested**: no test touched `dist/` before, which is why both bugs above shipped -- the bundle is generated at publish time from a source that was never wrong. The new test rebuilds it and checks export parity with CJS in both directions, absence of CommonJS remnants, and a real `import` that calls `dumpsCanonical` and compares bytes.
+
 ## [1.1.0] - 2026-08-05
 
 > **Breaking.** Serialization now rejects block and field names that cannot be

@@ -9,7 +9,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <PackageId>Ison.Parser</PackageId>
     <Title>ISON for C# — Official Implementation</Title>
     <Authors>Mahesh Vaikri</Authors>
