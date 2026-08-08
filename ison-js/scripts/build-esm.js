@@ -16,58 +16,39 @@ const { version } = require('../package.json');
 
 let content = fs.readFileSync(srcPath, 'utf8');
 
-// Replace the export section with ESM exports
+// The export list is derived from the CJS `const ISON = { ... }` object
+// rather than repeated here. Hand-maintaining it drifted once already:
+// dumpsCanonical and dumpsCanonicalISONL were added to CJS and never
+// reached ESM, so `import { dumpsCanonical }` failed for every ESM
+// consumer while `require` worked.
+const objectMatch = content.match(/const ISON = \{([\s\S]*?)\n    \};/);
+if (!objectMatch) {
+    throw new Error('build-esm: could not find the `const ISON = { ... }` export object');
+}
+const names = objectMatch[1]
+    .split('\n')
+    .map(line => line.replace(/\/\/.*$/, '').trim())
+    .filter(line => /^[A-Za-z_$][\w$]*,?$/.test(line))
+    .map(line => line.replace(/,$/, ''))
+    .filter(name => name !== 'version');
+
+if (names.length < 15) {
+    throw new Error(`build-esm: only found ${names.length} exports, expected the full set`);
+}
+
 const exportSection = `
 // =============================================================================
 // Export (ESM)
 // =============================================================================
 
 export {
-    Reference,
-    FieldInfo,
-    Block,
-    Document,
-    ISONError,
-    ISONSyntaxError,
-    ISONNameError,
-    ISONLRecord,
-    ISONLParser,
-    ISONLSerializer,
-    loads,
-    dumps,
-    fromDict,
-    jsonToISON,
-    isonToJSON,
-    loadsISONL,
-    dumpsISONL,
-    isonToISONL,
-    isonlToISON,
-    isonlStream,
+${names.map(n => `    ${n},`).join('\n')}
 };
 
 export const version = '${version}';
 
 export default {
-    Reference,
-    FieldInfo,
-    Block,
-    Document,
-    ISONError,
-    ISONSyntaxError,
-    ISONNameError,
-    ISONLRecord,
-    ISONLParser,
-    ISONLSerializer,
-    loads,
-    dumps,
-    fromDict,
-    jsonToISON,
-    isonToJSON,
-    loadsISONL,
-    dumpsISONL,
-    isonToISONL,
-    isonlToISON,
-    isonlStream,
+${names.map(n => `    ${n},`).join('\n')}
     version: '${version}'
 };
 `;
