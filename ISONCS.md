@@ -129,6 +129,28 @@ That asymmetry is deliberate, and it follows from a rule that governs all of thi
 
 The practical consequence is that the two forms do not carry identical document sets. ISON is the wider one. A converter must be prepared for the narrowing, and gets a clear error at the point of conversion instead of a corrupt line discovered later by a different reader.
 
+### References carry an id, not a type
+
+`:people:1` is the wire form for a reference whose id is `1`, whether the target stored that id as an integer or as the string `"1"`. This is deliberate and is not going to change.
+
+The type is not lost. It is declared once, at the target:
+
+```ison
+table.people
+id:int name
+1 Alice
+
+table.orders
+id:int owner
+100 :people:1
+```
+
+The reference carries `1`; the `people` block declares `id:int`; a consumer resolving the reference coerces against that declaration. Typing the reference site instead would repeat, at every reference in the document, information the target already states once — in a format whose entire premise is not repeating things. It is the same reasoning that puts field names in a header rather than on every row.
+
+The one genuinely ambiguous case is a single id column holding both `1` and `"1"`. An `id:int` annotation on that column rejects the string row, so the collision is a modelling error the target's own type declaration prevents. A consumer that permits heterogeneous ids — as a graph layer might — should guard at construction, where the mistake is, rather than expecting the wire format to disambiguate on its behalf.
+
+Changing this would require new reference syntax in all seven implementations and would invalidate every document already written. The cost is not the implementation; it is that every existing ISON file stops being readable by the thing that wrote it.
+
 ### Where ISONL is stricter, and why
 
 ISONL writes its envelope — `kind.name|fields|values` — raw, so it refuses characters in block and field names that ISON accepts. Two of those refusals have different justifications, and conflating them has already led to one proposed "fix" in the wrong direction.
