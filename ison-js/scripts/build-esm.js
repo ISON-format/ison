@@ -21,7 +21,7 @@ let content = fs.readFileSync(srcPath, 'utf8');
 // dumpsCanonical and dumpsCanonicalISONL were added to CJS and never
 // reached ESM, so `import { dumpsCanonical }` failed for every ESM
 // consumer while `require` worked.
-const objectMatch = content.match(/const ISON = \{([\s\S]*?)\n    \};/);
+const objectMatch = content.match(/const ISON = \{([\s\S]*?)\r?\n    \};/);
 if (!objectMatch) {
     throw new Error('build-esm: could not find the `const ISON = { ... }` export object');
 }
@@ -58,7 +58,14 @@ content = content.replace(/\(function\s*\(global\)\s*\{\s*'use strict';/m, '');
 content = content.replace(/\}\)\(typeof window !== 'undefined' \? window : global\);\s*$/m, '');
 
 // Remove the existing export section
-content = content.replace(/\/\/ =============================================================================\n\s*\/\/ Export\n[\s\S]*$/, '');
+// \r?\n throughout: with CRLF checkouts a bare \n never matched, so the
+// CJS export block survived into the ESM bundle and `module.exports`
+// ended up inside an ES module. Throw rather than emit a broken bundle.
+const stripped = content.replace(/[ \t]*\/\/ =+\r?\n[ \t]*\/\/ Export\r?\n[\s\S]*$/, '');
+if (stripped === content) {
+    throw new Error('build-esm: could not strip the CJS export section');
+}
+content = stripped;
 
 // Add ESM exports
 content = content.trim() + '\n' + exportSection;
